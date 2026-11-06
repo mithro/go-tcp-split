@@ -20,6 +20,10 @@ for stub in usr/bin/tcp-split usr/sbin/nft; do
 	printf '#!/bin/sh\n' > "$fakeroot/$stub"
 	chmod 0755 "$fakeroot/$stub"
 done
+# The units' default dependencies (Requires=sysinit.target and the like) must
+# resolve inside --root: systemd 255 (Ubuntu 24.04) refuses the start job
+# otherwise, so the scratch root gets the host's standard targets.
+cp /usr/lib/systemd/system/*.target "$units/"
 cp "$here"/systemd/tcp-split.socket "$here"/systemd/tcp-split.service \
 	"$here"/systemd/tcp-split-redirect.service "$units/"
 cp "$here/examples/10-listen.conf" "$units/tcp-split.socket.d/10-listen.conf"
