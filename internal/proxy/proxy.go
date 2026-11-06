@@ -29,6 +29,12 @@ const (
 	ResultConnectFailed = "connect-failed"
 )
 
+// Causes logged as err= for refusals that have no underlying error value.
+var (
+	errSelfAddress = errors.New("destination is the listener's own address")
+	errLimit       = errors.New("max-conns reached")
+)
+
 // Options configures a Server. Zero values select the documented defaults.
 type Options struct {
 	Lookup         func(*net.TCPConn) (netip.AddrPort, error)                          // default sockopt.OriginalDst
@@ -245,6 +251,7 @@ func (s *Server) Handle(c *net.TCPConn) {
 	dst := ""
 	var res relay.Result
 	result := ResultOK
+	var cause error // why a refusal happened; logged as err=
 	defer func() {
 		s.active.Add(-1)
 		s.up.Add(res.Up)
@@ -259,40 +266,43 @@ func (s *Server) Handle(c *net.TCPConn) {
 		}
 		attrs := []any{"client", client, "dst", dst, "up", res.Up, "down", res.Down,
 			"dur", time.Since(start), "result", result}
-		if result == ResultError {
+		switch {
+		case result == ResultError:
 			attrs = append(attrs, "err", res.Err)
+		case cause != nil:
+			attrs = append(attrs, "err", cause)
 		}
 		s.log.Info("connection", attrs...)
 	}()
 	if s.opts.Verbose {
 		s.log.Info("accept", "client", client)
 	}
-	reset := func(r string) {
-		result = r
+	reset := func(r string, why error) {
+		result, cause = r, why
 		relay.Reset(c)
 	}
 
 	d, err := s.opts.Lookup(c)
 	if err != nil {
-		reset(ResultNotRedirected)
+		reset(ResultNotRedirected, err)
 		return
 	}
 	dst = d.String()
 	if local, ok := c.LocalAddr().(*net.TCPAddr); ok {
 		la := local.AddrPort()
 		if netip.AddrPortFrom(la.Addr().Unmap(), la.Port()) == netip.AddrPortFrom(d.Addr().Unmap(), d.Port()) {
-			reset(ResultNotRedirected)
+			reset(ResultNotRedirected, errSelfAddress)
 			return
 		}
 	}
 	if err := s.opts.Check(d); err != nil {
 		// policy.ErrLoop, ErrInvalid and ErrDenied all map to denied; any
 		// other checker failure is refused the same way (fail closed).
-		reset(ResultDenied)
+		reset(ResultDenied, err)
 		return
 	}
 	if s.opts.MaxConns > 0 && n > int64(s.opts.MaxConns) {
-		reset(ResultLimit)
+		reset(ResultLimit, errLimit)
 		return
 	}
 
@@ -304,7 +314,7 @@ func (s *Server) Handle(c *net.TCPConn) {
 	}
 	up, err := s.opts.Dial(ctx, d)
 	if err != nil {
-		reset(ResultConnectFailed)
+		reset(ResultConnectFailed, err)
 		return
 	}
 

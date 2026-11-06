@@ -173,6 +173,10 @@ func TestNotRedirected(t *testing.T) {
 	if !strings.Contains(log, "up=0 down=0") || !strings.Contains(log, `dst=""`) {
 		t.Errorf("unexpected line:\n%s", log)
 	}
+	// The refusal carries its cause (the lookup error).
+	if !strings.Contains(log, "result=not-redirected err=ENOENT") {
+		t.Errorf("close line lacks err=<lookup error>:\n%s", log)
+	}
 }
 
 // SO_ORIGINAL_DST on a non-redirected conn returns its own local
@@ -182,14 +186,14 @@ func TestNotRedirectedSelfAddress(t *testing.T) {
 		return c.LocalAddr().(*net.TCPAddr).AddrPort(), nil
 	}}, netip.AddrPort{})
 	dialExpectReset(t, h.addr, 2*time.Second)
-	waitLog(t, h.logs, "result=not-redirected")
+	waitLog(t, h.logs, `result=not-redirected err="destination is the listener's own address"`)
 }
 
 func TestDenied(t *testing.T) {
 	up := testServer(t)
 	h := startProxy(t, Options{Check: func(netip.AddrPort) error { return policy.ErrDenied }}, addrOf(up))
 	dialExpectReset(t, h.addr, 2*time.Second)
-	waitLog(t, h.logs, "result=denied")
+	waitLog(t, h.logs, `result=denied err="destination denied by policy"`)
 }
 
 func TestConnectFailed(t *testing.T) {
@@ -201,7 +205,9 @@ func TestConnectFailed(t *testing.T) {
 	l.Close()
 	h := startProxy(t, Options{ConnectTimeout: time.Second}, dst)
 	dialExpectReset(t, h.addr, 2*time.Second)
-	waitLog(t, h.logs, "result=connect-failed")
+	// The cause tells refused from timed out, unreachable or no route.
+	waitLog(t, h.logs, "result=connect-failed err=")
+	waitLog(t, h.logs, "connection refused")
 }
 
 func TestLimit(t *testing.T) {
@@ -211,7 +217,7 @@ func TestLimit(t *testing.T) {
 	c1.Write([]byte("x"))
 	io.ReadFull(c1, make([]byte, 1)) // first is live
 	dialExpectReset(t, h.addr, 2*time.Second)
-	waitLog(t, h.logs, "result=limit")
+	waitLog(t, h.logs, `result=limit err="max-conns reached"`)
 	if a := h.s.Stats().Active; a != 1 {
 		t.Errorf("Active = %d, want 1", a)
 	}

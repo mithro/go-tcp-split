@@ -70,7 +70,7 @@ The daemon takes its listening sockets from systemd socket activation; `--listen
 
 Every value needs its own flag (`--deny A --deny B`, not `--deny A B`): a stray positional argument, a negative duration or a negative `--max-conns` is an error and the daemon exits 2 with a message rather than silently ignoring the rest of the command line.
 
-Each connection logs one line with a `result=` field, one of:
+Each connection logs one `msg=connection` line with `client=`, `dst=` (the original destination; empty when none was recovered), `up=`/`down=` (bytes client to destination and back), `dur=` and a `result=` field, one of:
 
 - `ok`: relayed and closed normally.
 - `connect-failed`: the upstream connection could not be made.
@@ -79,5 +79,7 @@ Each connection logs one line with a `result=` field, one of:
 - `limit`: refused because `--max-conns` was reached.
 - `idle`: closed by `--idle-timeout`.
 - `error`: the relay ended on an I/O error or reset.
+
+For `error` and for every refusal (`not-redirected`, `denied`, `connect-failed`, `limit`) the line also carries `err=` with the cause: the original-destination lookup error or `destination is the listener's own address`; the policy reason (`destination denied by policy`, `destination is a proxy listener`, `invalid destination`); the upstream dial error (refused, timed out, unreachable, ...); or `max-conns reached`.
 
 Only `ok` (both directions ended with a normal close) closes the two connections normally. Every other result resets them: a refused connection is reset, and a relay that ends on an error, an idle timeout or a forced drain resets both sides, so neither peer can mistake an aborted transfer for a complete one.
