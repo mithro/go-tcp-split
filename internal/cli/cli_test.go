@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -204,5 +205,123 @@ func TestParseArgsIdleTimeoutTooSmall(t *testing.T) {
 	if _, _, err := parseArgs([]string{"--max-conns", "0", "--keepalive", "0", "--connect-timeout", "0",
 		"--stats-interval", "0", "--drain", "0"}, &errb); err != nil {
 		t.Errorf("zero values rejected: %v", err)
+	}
+}
+
+// listenNonLoopback listens on the first global unicast address of this host.
+func listenNonLoopback(t *testing.T) net.Listener {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		pfx, err := netip.ParsePrefix(a.String())
+		if err != nil || !pfx.Addr().IsGlobalUnicast() {
+			continue
+		}
+		l, err := net.Listen("tcp", netip.AddrPortFrom(pfx.Addr(), 0).String())
+		if err == nil {
+			return l
+		}
+	}
+	t.Skip("no non-loopback address to run an upstream on (the real policy refuses loopback)")
+	return nil
+}
+
+// Review Focus 5 at the CLI level: SIGTERM with a live relay drains it. Main
+// keeps running while the relay is live, the relay finishes normally, its
+// close line is logged and Main returns 0. Without nft redirection the test
+// cannot make a real redirected connection, so it injects the original
+// destination through testLookup (Main's only test seam).
+func TestMainSIGTERMDrainsLiveRelay(t *testing.T) {
+	// The real policy refuses loopback destinations, so the upstream listens
+	// on one of this host's own non-loopback addresses.
+	up := listenNonLoopback(t)
+	defer up.Close()
+	go func() {
+		c, err := up.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		io.Copy(c, c) // echo until the client half-closes
+	}()
+	dst := up.Addr().(*net.TCPAddr).AddrPort()
+	testLookup = func(*net.TCPConn) (netip.AddrPort, error) { return dst, nil }
+	t.Cleanup(func() { testLookup = nil })
+
+	var out, errb lockedBuf
+	done := make(chan int, 1)
+	go func() {
+		done <- Main([]string{"--listen", "127.0.0.1:0", "--stats-interval", "0", "--drain", "5s"}, &out, &errb)
+	}()
+	re := regexp.MustCompile(`listening addr=(\S+)`)
+	var addr string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if m := re.FindStringSubmatch(out.String()); m != nil {
+			addr = m[1]
+			break
+		}
+	}
+	if addr == "" {
+		t.Fatalf("no listening line; out=%q err=%q", out.String(), errb.String())
+	}
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := c.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("echo before signal = %q, %v; out=%q", buf, err, out.String())
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), "signal=terminated"); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no shutdown line; out=%q", out.String())
+		}
+	}
+	// Draining: Main has not returned and the relay still carries data.
+	select {
+	case rc := <-done:
+		t.Fatalf("Main returned %d with a live relay; out=%q", rc, out.String())
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := c.Write([]byte("pong")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "pong" {
+		t.Fatalf("echo during drain = %q, %v", buf, err)
+	}
+	// New connections are refused while draining.
+	if nc, err := net.Dial("tcp", addr); !errors.Is(err, syscall.ECONNREFUSED) {
+		if nc != nil {
+			nc.Close()
+		}
+		t.Fatalf("dial during drain: err = %v, want ECONNREFUSED", err)
+	}
+	// Finish the relay cleanly; Main must then return 0 well inside --drain.
+	c.(*net.TCPConn).CloseWrite()
+	if rest, err := io.ReadAll(c); err != nil || len(rest) != 0 {
+		t.Fatalf("after half-close: %q, %v", rest, err)
+	}
+	select {
+	case rc := <-done:
+		if rc != 0 {
+			t.Fatalf("rc=%d out=%q err=%q", rc, out.String(), errb.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Main did not return after the relay finished")
+	}
+	if !regexp.MustCompile(`msg=connection .*up=8 down=8 .*result=ok`).MatchString(out.String()) {
+		t.Fatalf("no result=ok close line for the drained relay; out=%q", out.String())
 	}
 }

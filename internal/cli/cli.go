@@ -21,6 +21,12 @@ import (
 // Version is the release version; the build overrides it via -ldflags -X.
 var Version = "dev"
 
+// testLookup, when set by a test, replaces the original-destination lookup.
+// It is the only test seam in Main: without nft redirection a test cannot
+// produce a connection with an original destination, so it cannot otherwise
+// hold a live relay open through Main. Production never sets it.
+var testLookup func(*net.TCPConn) (netip.AddrPort, error)
+
 // Main runs tcp-split with args (excluding the program name) and returns the
 // process exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
@@ -65,6 +71,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	checker := policy.New(own, cfg.Deny)
 	srv := proxy.New(proxy.Options{
+		Lookup:         testLookup, // nil: proxy uses sockopt.OriginalDst
 		Check:          checker.Check,
 		ConnectTimeout: cfg.ConnectTimeout,
 		Keepalive:      cfg.Keepalive,
