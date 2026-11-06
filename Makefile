@@ -5,7 +5,7 @@ VERSION ?= dev
 V ?= 0.0.post1
 A ?= $(shell $(GO) env GOARCH)
 
-.PHONY: test vet build fmt-check deb
+.PHONY: test vet build fmt-check deb test-netns test-netns-unpriv
 
 test:
 	sh packaging/check-units.sh
@@ -25,3 +25,9 @@ fmt-check:
 # Debian package in dist/ (needs nfpm and a prior `make build`).
 deb:
 	VERSION=$(V) ARCH=$(A) nfpm package -p deb -f nfpm.yaml -t dist/
+
+test-netns:
+	sudo python3 test/netns/run.py --binary dist/tcp-split
+
+test-netns-unpriv:
+	unshare -Urnm -- python3 test/netns/run.py --binary dist/tcp-split
