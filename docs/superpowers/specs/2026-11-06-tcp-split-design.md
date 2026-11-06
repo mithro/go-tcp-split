@@ -2,6 +2,14 @@
 
 Status: DRAFT, 2026-11-06. Not approved. Nothing is built.
 
+Revision 2026-11-06: the fail-open control plane is withdrawn by the owner
+("Just make the rules permanent and the server run permanently"). There is
+no `tcp-split-redirect.service` and no `BindsTo=` coupling: the interception
+rules are the site's permanent firewall configuration, and both
+`tcp-split.socket` and `tcp-split.service` are enabled at boot. Former Goal 4
+("Fail open") and the matching anti-goal are withdrawn; a stopped proxy now
+resets the tunnel's redirected TCP until it is restarted.
+
 ## Intent
 
 A laptop reaches its home network (through the home router, `home`) and a
@@ -36,14 +44,12 @@ about the traffic.
    reach.
 3. The relay runs as an unprivileged dynamic user in a systemd sandbox that
    exposes nothing of the filesystem beyond the proxy binary itself.
-4. Fail open: if the proxy is not running, the interception rules are not
-   loaded and traffic is forwarded as before.
-5. One static binary, no dependencies, built for amd64 and arm64, shipped as
+4. One static binary, no dependencies, built for amd64 and arm64, shipped as
    a Debian package from a signed apt repository, identical on every host
    that runs it.
-6. Observable: one journal line per connection, periodic aggregate counters,
+5. Observable: one journal line per connection, periodic aggregate counters,
    nft counters on every interception rule.
-7. Deployed on the VPN server first, declaratively, through the site's
+6. Deployed on the VPN server first, declaratively, through the site's
    configuration management, with a read-only verify pass.
    A second host (such as the home router) follows as a separately planned
    phase.
@@ -72,8 +78,6 @@ about the traffic.
   interfaces.
 - The proxy process can read `/etc` (the WireGuard private key lives there)
   or write anywhere.
-- A proxy crash or stop leaves the tunnel's TCP dead instead of falling back
-  to plain forwarding.
 - A tunnel comes up without its firewall. The existing fail-closed chain
   (`wg-quick@` requires `vpn-firewall.service`) must be preserved.
 
@@ -151,9 +155,9 @@ convention in `mithro/apt-repo-action`'s `docs/packaging.md` and
   then what the package installs, the build line, and usage.
 - Debian package `tcp-split` (a name not in Debian) installs:
   - `/usr/bin/tcp-split` (static, `CGO_ENABLED=0`, version via `-X`).
-  - `tcp-split.socket`, `tcp-split.service`, `tcp-split-redirect.service`
-    (below). The socket unit ships with **no** `ListenStream=`; the site
-    supplies addresses in a drop-in. Nothing is enabled by the package.
+  - `tcp-split.socket` and `tcp-split.service` (below). The socket unit
+    ships with **no** `ListenStream=`; the site supplies addresses in a
+    drop-in. Nothing is enabled by the package.
   - `/usr/share/doc/tcp-split/` with README, an example socket drop-in and
     an example `redirect.nft`.
 - The Go module has **no dependencies outside the standard library**. The
@@ -218,9 +222,13 @@ a message; the daemon never falls back silently.
 not exist yet at boot), `ListenStream=` supplied by the site drop-in, one
 line per tunnel address, both families. Listening only on the tunnel server
 addresses, never a wildcard, is the first line of "unreachable from
-elsewhere"; the nft `input` guard below is the second.
+elsewhere"; the nft `input` guard below is the second. Because the socket
+unit passes the listeners, the service's sandbox can keep
+`SocketBindDeny=any`. `[Install] WantedBy=sockets.target`.
 
-`tcp-split.service`: `Requires=tcp-split.socket`, `ExecStart=/usr/bin/tcp-split`
+`tcp-split.service`: `Requires=tcp-split.socket`, `After=tcp-split.socket`,
+`[Install] WantedBy=multi-user.target` (the proxy runs permanently from boot
+rather than waiting for a first connection), `ExecStart=/usr/bin/tcp-split`
 with site flags from `EnvironmentFile=-/etc/default/tcp-split` (read by
 systemd, never by the daemon), and the sandbox:
 
@@ -266,25 +274,28 @@ unit with the same directives and a loopback `--listen`, as an
 administrative user with sudo, leaving nothing on the host. Any directive that systemd 257 lacks or
 that breaks startup is dropped with a note, not worked around.
 
+The site enables and starts both units
+(`systemctl enable --now tcp-split.socket tcp-split.service`). No unit
+loads or removes the interception rules (below). While the proxy is down
+(the socket unit stopped, or the service failed past its restart limit),
+redirected connections reach a port with no listener and are reset; they do
+not fall back to plain forwarding. Stopping only the service is brief: the
+socket unit keeps the listeners and the next connection starts it again.
+
 Changing the socket unit's addresses (a peer added or removed) restarts
-`tcp-split.socket`, which stops the service and resets every live split
-connection on every tunnel, and drops the redirect table until the socket's
-`Wants=tcp-split-redirect.service` brings it back. Peers change rarely;
-this is accepted and documented in the role README rather than solved with
-per-tunnel unit instances.
+`tcp-split.socket`, and through `Requires=` the service, which resets every
+live split connection on every tunnel. Peers change rarely; this is accepted
+and documented in the role README rather than solved with per-tunnel unit
+instances.
 
-`tcp-split-redirect.service`: `Type=oneshot`, `RemainAfterExit=yes`,
-`BindsTo=tcp-split.socket`, `After=tcp-split.socket`,
-`ExecStart=nft -f /etc/tcp-split/redirect.nft`,
-`ExecReload=` the same, `ExecStop=nft delete table inet tcp_split`.
-`BindsTo` is the fail-open mechanism: when the socket unit stops, the
-interception table is removed and the kernel forwards as before. The
-package ships no `/etc/tcp-split/redirect.nft`; the site provides it.
+### The interception rules (site-provided, permanent)
 
-### The interception rules (site-provided `redirect.nft`)
-
-Its own table, `inet tcp_split`, create/delete/create for idempotence, so it
-never touches the VPN table or libvirt's tables:
+The rules are part of the site's permanent firewall configuration, loaded at
+boot with the rest of it (for example included from `/etc/nftables.conf` or
+from the VPN firewall's own file) and left in place whether or not the proxy
+runs. The package ships only `examples/redirect.nft` to copy from. Its own
+table, `inet tcp_split`, create/delete/create for idempotence, so it never
+touches the VPN table or libvirt's tables:
 
 - `prerouting`, `type nat hook prerouting priority dstnat - 10`:
   for `iifname $VPN_IFS`, `meta l4proto tcp`, `fib daddr type != local`,
@@ -329,12 +340,11 @@ confinement, `input` guards and masquerade are unchanged.
   families); templates `/etc/default/tcp-split` with `-deny` for
   `10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7` and the server's own
   VM or LAN prefixes;
-  templates `/etc/tcp-split/redirect.nft` from the same tunnel list and WAN
-  interface the VPN table uses; enables and starts the socket, service and
-  redirect units; and adds `Wants=tcp-split.socket` ordering so the redirect
-  table is loaded after the VPN firewall. When disabled or absent it removes
+  adds the `inet tcp_split` table, from the same tunnel list and WAN
+  interface the VPN table uses, to the VPN firewall's permanent nft
+  configuration; and enables and starts the socket and service units. When disabled or absent it removes
   all of it (same shape as the role's existing teardown).
-- Verify (`--tags verify`, read-only, no `failed_when: false`): the three
+- Verify (`--tags verify`, read-only, no `failed_when: false`): the two
   units active and enabled; the live `inet tcp_split` table contains the
   `fib daddr oif "<wan>"` match, the input guard and every tunnel interface;
   `ss -ltn` shows the proxy listening on every tunnel address and nothing
@@ -355,7 +365,7 @@ built as a stand-in for them.
 1. The netns integration tests (below) pass for IPv4 and IPv6 in CI.
 2. On the VPN server, with the laptop on `wg-laptop` in full-tunnel mode: a
    download from a known-CUBIC server through the tunnel, measured
-   alternately with the redirect unit started and stopped, ideally when the
+   alternately with the `inet tcp_split` table loaded and deleted, ideally when the
    path's loss is highest. The split run must be materially faster. The
    connection log on the server shows the flows with sane byte counts and
    outcomes.
@@ -365,8 +375,10 @@ built as a stand-in for them.
    destination is split (log line shows the v6 original destination).
 4. From the tunnel, connections to the server's VMs and private ranges are still
    dropped by the VPN table and never appear in the proxy log.
-5. `systemctl stop tcp-split.socket` removes the `inet tcp_split` table and
-   new tunnel connections are plainly forwarded again.
+5. `systemctl stop tcp-split.socket tcp-split.service` causes new redirected
+   tunnel connections to be reset; `systemctl start tcp-split.socket
+   tcp-split.service` restores service. (Stopping `tcp-split.service` alone
+   is undone by the socket unit's activation on the next connection.)
 
 ### Testing
 
@@ -382,7 +394,7 @@ built as a stand-in for them.
   `sudo` on the GitHub runner, since Ubuntu restricts unprivileged user
   namespaces) and locally (`unshare -Urn` on Debian). Also: a connection to
   the proxy port that was not redirected is reset; a redirected connection
-  to a `-deny` prefix is reset; stopping the proxy drops the redirect table.
+  to a `-deny` prefix is reset.
 - `gofmt`, `go vet`, and the packaging version helper tests, as in the
   sibling repositories.
 

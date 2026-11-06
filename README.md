@@ -44,15 +44,19 @@ Or `make build` (`VERSION` defaults to `dev`).
 
 ## Units
 
-The package ships three systemd units (see `packaging/README.md`) and enables none of them.
+The package ships two systemd units (see `packaging/README.md`) and enables neither. The site enables and starts both, and the proxy then runs permanently from boot:
 
-`tcp-split.socket` owns the listening sockets. The site adds a drop-in with one `ListenStream=` per tunnel server address (both families); it never listens on a wildcard. It is the unit to enable, and it pulls in the redirect unit.
+```sh
+sudo systemctl enable --now tcp-split.socket tcp-split.service
+```
 
-`tcp-split.service` is the sandboxed daemon, started by the socket. Its flags come from `TCP_SPLIT_OPTS` in `/etc/default/tcp-split`.
+`tcp-split.socket` owns the listening sockets. The site adds a drop-in with one `ListenStream=` per tunnel server address (both families); it never listens on a wildcard. `FreeBind=yes` lets it bind the tunnel addresses before the tunnels exist, and because it passes the listeners to the daemon, the service's sandbox keeps `SocketBindDeny=any`.
 
-`tcp-split-redirect.service` loads the site's `/etc/tcp-split/redirect.nft`, which redirects tunnel TCP to the daemon's port in its own `inet tcp_split` table.
+`tcp-split.service` is the sandboxed daemon. It `Requires=` the socket and is `WantedBy=multi-user.target`, so it starts at boot rather than on a first connection. Its flags come from `TCP_SPLIT_OPTS` in `/etc/default/tcp-split`.
 
-The fail-open chain: the redirect unit is `BindsTo=` the socket, so if the socket stops, the redirect table is deleted and traffic forwards as before.
+The interception rules are not managed by either unit. They are the site's permanent firewall configuration: copy `packaging/examples/redirect.nft` (installed as `/usr/share/doc/tcp-split/examples/redirect.nft`) into the site's persistent nftables configuration, for example included from `/etc/nftables.conf` or the VPN firewall's own file. It is a table of its own, `inet tcp_split`.
+
+There is no fail-open. While the proxy is down (the socket unit stopped, or the service failed past its restart limit), the rules still redirect tunnel TCP to its port and those connections are reset; they work again once `tcp-split.socket` and `tcp-split.service` are running. To stop splitting on purpose, remove the table from the site's configuration.
 
 ## Firewall: split traffic bypasses the forward chain
 

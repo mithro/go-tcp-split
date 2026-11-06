@@ -536,8 +536,9 @@ now carries these three directives in place of `TemporaryFileSystem=/:ro`.
   outbound `connect()`, the `splice(2)` relay path and the per-socket `setsockopt`s on
   the upstream leg did not run under the filter; they remain to be observed (with
   `SystemCallLog=` if wanted) on the first real deployment.
-- `tcp-split-redirect.service` (the nftables helper) was not run: the host's firewall
-  must not be changed.
+- The nftables interception rules were not loaded: the host's firewall must not be
+  changed. (The package no longer ships a unit for them; they are site firewall
+  configuration.)
 - `EnvironmentFile=` / `$TCP_SPLIT_OPTS` expansion was not exercised.
 - The `ExecStart=` path resolution of a persistent unit (here `systemd-run
   --machine=.host` submitted it as-is).

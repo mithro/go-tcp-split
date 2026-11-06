@@ -64,8 +64,9 @@ Facts about the unprivileged path:
 
 ## Not covered here
 
-The spec's Testing section also lists "stopping the proxy drops the redirect
-table". That is a systemd property (`tcp-split-redirect.service` is
-`BindsTo=tcp-split.socket`, and its `ExecStop=` deletes the table), and this
-harness runs no systemd. It is proven on a real host instead: the transient-unit proof
-on the VPN server and the site deployment's own verify pass (acceptance item 5).
+This harness runs no systemd: it loads the example table
+(`packaging/examples/redirect.nft`) into its server namespace itself and runs
+the binary with `--listen`. In production the rules are permanent site
+firewall configuration and the units are enabled at boot; what happens when
+the proxy is stopped (new redirected connections are reset) is checked on a
+real host, as the spec's acceptance item 5.
