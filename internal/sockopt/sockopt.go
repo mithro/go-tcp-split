@@ -3,11 +3,10 @@
 package sockopt
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -28,7 +27,8 @@ const (
 
 // ParseSockaddr decodes a raw Linux sockaddr_in (16 bytes) or sockaddr_in6
 // (28 bytes) as returned by SO_ORIGINAL_DST. The family field is native-endian
-// (little-endian on supported amd64/arm64); the port is big-endian.
+// (little-endian on every supported GOARCH: 386, amd64, arm, arm64,
+// riscv64); the port is big-endian.
 func ParseSockaddr(b []byte) (netip.AddrPort, error) {
 	if len(b) < 2 {
 		return netip.AddrPort{}, fmt.Errorf("sockaddr too short: %d bytes", len(b))
@@ -68,22 +68,27 @@ func OriginalDst(c *net.TCPConn) (netip.AddrPort, error) {
 	if err != nil {
 		return netip.AddrPort{}, fmt.Errorf("original dst: syscall conn: %w", err)
 	}
-	var buf [sockaddrIn6Len]byte
-	optlen := uint32(len(buf))
-	var errno syscall.Errno
+	// syscall has no generic byte-buffer getsockopt, and SYS_GETSOCKOPT does
+	// not exist on linux/386 (socket calls go through socketcall(2) there).
+	// GetsockoptIPv6MTUInfo calls getsockopt portably on every GOARCH with a
+	// 32-byte buffer, which holds a sockaddr_in (16) or a sockaddr_in6 (28).
+	// The kernel only requires the buffer to be at least that large.
+	var info *syscall.IPv6MTUInfo
+	var serr error
 	if err := rc.Control(func(fd uintptr) {
-		_, _, errno = syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, uintptr(level), soOriginalDst,
-			uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&optlen)), 0)
+		info, serr = syscall.GetsockoptIPv6MTUInfo(int(fd), level, soOriginalDst)
 	}); err != nil {
 		return netip.AddrPort{}, fmt.Errorf("original dst: control: %w", err)
 	}
-	if errno != 0 {
-		return netip.AddrPort{}, fmt.Errorf("getsockopt SO_ORIGINAL_DST: %w", errno)
+	if serr != nil {
+		return netip.AddrPort{}, fmt.Errorf("getsockopt SO_ORIGINAL_DST: %w", serr)
 	}
-	if int(optlen) > len(buf) {
-		return netip.AddrPort{}, errors.New("original dst: kernel returned oversized length")
-	}
-	return ParseSockaddr(buf[:optlen])
+	return ParseSockaddr(asBytes(info))
+}
+
+// asBytes views a fixed-size getsockopt result struct as raw bytes.
+func asBytes[T any](p *T) []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(p)), unsafe.Sizeof(*p))
 }
 
 // SetCongestion sets the TCP congestion control algorithm on c.
@@ -110,20 +115,22 @@ func Congestion(c *net.TCPConn) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("congestion: syscall conn: %w", err)
 	}
-	// syscall has no GetsockoptString; call getsockopt directly. The kernel
-	// writes at most TCP_CA_NAME_MAX (16) bytes, NUL-terminated.
-	var buf [64]byte
-	optlen := uint32(len(buf))
-	var errno syscall.Errno
+	// syscall has no GetsockoptString. GetsockoptIPv6Mreq calls getsockopt
+	// portably (including linux/386) with a 20-byte buffer; the kernel writes
+	// at most TCP_CA_NAME_MAX (16) bytes, NUL-padded.
+	var mreq *syscall.IPv6Mreq
+	var serr error
 	if err := rc.Control(func(fd uintptr) {
-		_, _, errno = syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, syscall.IPPROTO_TCP, tcpCongestion,
-			uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&optlen)), 0)
+		mreq, serr = syscall.GetsockoptIPv6Mreq(int(fd), syscall.IPPROTO_TCP, tcpCongestion)
 	}); err != nil {
 		return "", fmt.Errorf("congestion: control: %w", err)
 	}
-	if errno != 0 {
-		return "", fmt.Errorf("getsockopt TCP_CONGESTION: %w", errno)
+	if serr != nil {
+		return "", fmt.Errorf("getsockopt TCP_CONGESTION: %w", serr)
 	}
-	name := string(buf[:min(optlen, uint32(len(buf)))])
-	return strings.TrimRight(name, "\x00"), nil
+	b := asBytes(mreq)
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
+	return string(b), nil
 }
