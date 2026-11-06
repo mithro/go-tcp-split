@@ -223,14 +223,41 @@ func TestLimit(t *testing.T) {
 	}
 }
 
+// Review Focus 3: bytes the client sends before the upstream connect has
+// completed are delivered intact. The injected Dial blocks until the test has
+// written all 64 KiB, so the data is provably queued before the dial even
+// starts its connect.
 func TestEarlyClientData(t *testing.T) {
 	l, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	h := startProxy(t, Options{ConnectTimeout: time.Second}, addrOf(l))
+	dialing := make(chan struct{})
+	release := make(chan struct{})
+	h := startProxy(t, Options{
+		ConnectTimeout: 5 * time.Second,
+		Dial: func(ctx context.Context, dst netip.AddrPort) (*net.TCPConn, error) {
+			close(dialing)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			var d net.Dialer
+			c, err := d.DialContext(ctx, "tcp", dst.String())
+			if err != nil {
+				return nil, err
+			}
+			return c.(*net.TCPConn), nil
+		},
+	}, addrOf(l))
 	c := dial(t, h.addr)
+	select {
+	case <-dialing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("proxy never started dialling")
+	}
 	payload := make([]byte, 64<<10)
 	for i := range payload {
 		payload[i] = byte(i * 7)
@@ -238,7 +265,8 @@ func TestEarlyClientData(t *testing.T) {
 	if _, err := c.Write(payload); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond) // proxy has dialled; upstream not yet accepted
+	time.Sleep(50 * time.Millisecond) // let the bytes land in the proxy's receive queue
+	close(release)
 	uc, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
@@ -301,7 +329,26 @@ func TestShutdownDrains(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		c.CloseWrite()
 	}()
-	h.s.Shutdown(2 * time.Second)
+	shut := make(chan struct{})
+	go func() {
+		h.s.Shutdown(2 * time.Second)
+		close(shut)
+	}()
+	// Review Focus 5: once Shutdown has begun, new connections are refused
+	// (the listener is closed) while the live relay keeps draining.
+	for !h.s.isClosed() {
+		time.Sleep(time.Millisecond)
+	}
+	if nc, err := net.Dial("tcp", h.addr); !errors.Is(err, syscall.ECONNREFUSED) {
+		if nc != nil {
+			nc.Close()
+		}
+		t.Fatalf("dial during drain: err = %v, want ECONNREFUSED", err)
+	}
+	if a := h.s.Stats().Active; a != 1 {
+		t.Errorf("Active during drain = %d, want 1 (the live relay)", a)
+	}
+	<-shut
 	if d := time.Since(start); d > 1500*time.Millisecond {
 		t.Errorf("drain took %v, want prompt", d)
 	}
@@ -309,7 +356,21 @@ func TestShutdownDrains(t *testing.T) {
 		t.Errorf("Serve = %v", err)
 	}
 	waitLog(t, h.logs, "result=ok")
-	h.s.Shutdown(time.Second) // second call is a no-op
+	// A second Shutdown is a no-op: it returns at once despite its long
+	// drain, logs nothing and changes no counter.
+	before, beforeLog := h.s.Stats(), h.logs.String()
+	start = time.Now()
+	h.s.Shutdown(10 * time.Second)
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("second Shutdown took %v, want immediate", d)
+	}
+	if after := h.s.Stats(); after.Accepted != before.Accepted || after.Completed != before.Completed ||
+		after.Failed != before.Failed || after.Active != 0 {
+		t.Errorf("second Shutdown changed stats: %+v -> %+v", before, after)
+	}
+	if h.logs.String() != beforeLog {
+		t.Errorf("second Shutdown logged:\n%s", strings.TrimPrefix(h.logs.String(), beforeLog))
+	}
 
 	// Stuck relay: upstream never replies, forced close.
 	stuck, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -340,6 +401,8 @@ func TestShutdownDrains(t *testing.T) {
 		t.Errorf("stats after forced shutdown: %+v", st)
 	}
 	waitLog(t, h2.logs, "result=error")
+	// A force-drained relay resets the client.
+	expectReset(t, c2, 2*time.Second)
 }
 
 func TestStats(t *testing.T) {
