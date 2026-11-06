@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" width="960" height="640" role="img" aria-label="A forwarded TCP connection from the laptop is terminated on the VPN server and re-originated from it, so the lossy tunnel leg runs on a server-side BBR socket while the clean leg runs the destination's own congestion control. The interception rules are permanent site firewall configuration, and both systemd units are enabled at boot.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 660" width="960" height="660" role="img" aria-label="A forwarded TCP connection from the laptop is terminated on the VPN server and re-originated from it, so the lossy tunnel leg runs on a server-side BBR socket while the clean leg runs the destination's own congestion control. The interception rules are permanent site firewall configuration, and both systemd units are enabled at boot.">
   <title>tcp-split architecture</title>
-  <desc>Top: the data path of one connection. The laptop's traffic arrives on vps through the WireGuard tunnel (the lossy leg) on wg-laptop. An nftables prerouting chain in table inet tcp_split (nat, dstnat - 10) matches iifname wg-laptop, tcp, fib daddr type != local and fib daddr oif eth0. Traffic that does not match (not TCP, a local destination, or a destination not routed via eth0) is handled by the VPN table as before: forward or input chain, masquerade for IPv4. A match is redirected to port 10443: the destination is rewritten to the tunnel's server address while conntrack keeps the original. tcp-split, socket-activated by tcp-split.socket and sandboxed with DynamicUser and an empty read-only root, accepts on its client-facing socket (server-side BBR, where the lossy leg ends), reads SO_ORIGINAL_DST, applies policy (loop, invalid, --deny) and the connection limit, dials the original destination and relays with splice and half-close. The new connection leaves through eth0 with vps's own address as its source, on the clean leg to the destination, which runs its own congestion control over a lossless path. Bottom: tcp-split.socket holds the listeners on the tunnel server addresses with FreeBind and activates tcp-split.service; the site enables both units at boot and the proxy runs permanently. No unit loads or removes the nft rules: table inet tcp_split is part of the site's permanent firewall configuration, so while the proxy is down, redirected connections are reset.</desc>
+  <desc>Top: the data path of one connection. The laptop's traffic arrives on vps through the WireGuard tunnel (the lossy leg) on wg-laptop. An nftables prerouting chain in table inet tcp_split (nat, dstnat - 10) matches iifname wg-laptop, tcp, fib daddr type != local and fib daddr oif eth0. Traffic that does not match (not TCP, a local destination, or a destination not routed via eth0) is handled by the VPN table as before: forward or input chain, masquerade for IPv4. A match is redirected to port 10443: the destination is rewritten to the tunnel's server address while conntrack keeps the original. tcp-split, started at boot with its listeners passed by tcp-split.socket and sandboxed with DynamicUser and an empty read-only root, accepts on its client-facing socket (server-side BBR, where the lossy leg ends), reads SO_ORIGINAL_DST, applies policy (loop, invalid, --deny) and the connection limit, dials the original destination and relays with splice and half-close. The new connection leaves through eth0 with vps's own address as its source, on the clean leg to the destination, which runs its own congestion control over a lossless path. Bottom: tcp-split.socket holds the listeners on the tunnel server addresses with FreeBind and passes the listeners to tcp-split.service; the site enables both units at boot and the proxy runs permanently. No unit loads or removes the nft rules: table inet tcp_split is part of the site's permanent firewall configuration, so while the proxy is down, redirected connections are reset.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#1f2328"/>
@@ -79,7 +79,7 @@
       <text x="306" y="388">server-side BBR</text>
     </g>
     <g fill="#59636e">
-      <text x="306" y="412">socket-activated by</text>
+      <text x="306" y="412">listeners from</text>
       <text x="306" y="427" font-family="ui-monospace, monospace">tcp-split.socket</text>
       <text x="306" y="444">DynamicUser,</text>
       <text x="306" y="459">empty read-only root</text>
@@ -138,24 +138,25 @@
     <text x="30" y="571" font-size="13" font-weight="600" font-family="ui-monospace, monospace">tcp-split.socket</text>
     <text x="30" y="589" fill="#59636e">enabled at boot</text>
 
-    <!-- activates -->
-    <line x1="216" y1="575" x2="302" y2="575" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
-    <text x="259" y="567" text-anchor="middle">activates</text>
+    <!-- passes listeners -->
+    <line x1="216" y1="575" x2="332" y2="575" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+    <text x="274" y="567" text-anchor="middle">passes listeners</text>
 
     <!-- tcp-split.service -->
-    <rect x="304" y="550" width="200" height="50" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
-    <text x="318" y="571" font-size="13" font-weight="600" font-family="ui-monospace, monospace">tcp-split.service</text>
-    <text x="318" y="589" fill="#59636e">enabled at boot</text>
+    <rect x="334" y="550" width="200" height="50" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="348" y="571" font-size="13" font-weight="600" font-family="ui-monospace, monospace">tcp-split.service</text>
+    <text x="348" y="589" fill="#59636e">enabled at boot</text>
 
     <!-- the site's rules -->
-    <rect x="544" y="550" width="400" height="50" rx="6" fill="#ffffff" stroke="#59636e" stroke-width="1"/>
-    <text x="558" y="571" font-size="13" font-weight="600">nft rules: permanent site firewall config</text>
-    <text x="558" y="589" fill="#59636e">no unit loads or removes them</text>
+    <rect x="564" y="550" width="380" height="68" rx="6" fill="#ffffff" stroke="#59636e" stroke-width="1"/>
+    <text x="578" y="571" font-size="13" font-weight="600">nft rules: permanent site firewall config</text>
+    <text x="578" y="589" fill="#59636e">table inet tcp_split · no unit loads or removes it</text>
+    <text x="578" y="607" fill="#59636e">proxy down ⇒ redirected connections are reset</text>
 
     <!-- legend -->
-    <line x1="16" y1="626" x2="40" y2="626" stroke="#1f2328" stroke-width="2"/>
-    <text x="46" y="630" fill="#59636e">packet path</text>
-    <line x1="136" y1="626" x2="160" y2="626" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4"/>
-    <text x="166" y="630" fill="#59636e">unit control</text>
+    <line x1="16" y1="644" x2="40" y2="644" stroke="#1f2328" stroke-width="2"/>
+    <text x="46" y="648" fill="#59636e">packet path</text>
+    <line x1="136" y1="644" x2="160" y2="644" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="166" y="648" fill="#59636e">unit control</text>
   </g>
 </svg>

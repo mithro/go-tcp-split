@@ -342,8 +342,9 @@ confinement, `input` guards and masquerade are unchanged.
   VM or LAN prefixes;
   adds the `inet tcp_split` table, from the same tunnel list and WAN
   interface the VPN table uses, to the VPN firewall's permanent nft
-  configuration; and enables and starts the socket and service units. When disabled or absent it removes
-  all of it (same shape as the role's existing teardown).
+  configuration; and enables and starts the socket and service units.
+  When disabled or absent it removes all of it, and deletes the live
+  table (same shape as the role's existing teardown).
 - Verify (`--tags verify`, read-only, no `failed_when: false`): the two
   units active and enabled; the live `inet tcp_split` table contains the
   `fib daddr oif "<wan>"` match, the input guard and every tunnel interface;
@@ -365,8 +366,8 @@ built as a stand-in for them.
 1. The netns integration tests (below) pass for IPv4 and IPv6 in CI.
 2. On the VPN server, with the laptop on `wg-laptop` in full-tunnel mode: a
    download from a known-CUBIC server through the tunnel, measured
-   alternately with the `inet tcp_split` table loaded and deleted, ideally when the
-   path's loss is highest. The split run must be materially faster. The
+   alternately with the `inet tcp_split` table loaded and deleted, ideally
+   when the path's loss is highest. The split run must be materially faster. The
    connection log on the server shows the flows with sane byte counts and
    outcomes.
 3. From the laptop through the tunnel: SSH to an internet host survives an
