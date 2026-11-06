@@ -1,4 +1,7 @@
-# /etc/tcp-split/redirect.nft
+# Example interception table for the site's permanent nftables configuration.
+# No tcp-split unit loads or removes it: copy it (for example to
+# /etc/nftables.d/tcp-split.nft) and include it from /etc/nftables.conf, or
+# merge it into the VPN firewall's own file, so it is loaded at boot.
 #
 # Uncomment and edit these three lines for the site (nft refuses to redefine
 # a symbol, so they must appear exactly once, before the table below):

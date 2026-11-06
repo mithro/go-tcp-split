@@ -32,10 +32,6 @@ contents:
     dst: /usr/lib/systemd/system/tcp-split.service
     file_info:
       mode: 0644
-  - src: ./packaging/systemd/tcp-split-redirect.service
-    dst: /usr/lib/systemd/system/tcp-split-redirect.service
-    file_info:
-      mode: 0644
   - src: ./packaging/examples/10-listen.conf
     dst: /usr/share/doc/tcp-split/examples/10-listen.conf
     file_info:

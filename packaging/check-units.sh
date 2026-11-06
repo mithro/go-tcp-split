@@ -8,29 +8,25 @@ NFT=/usr/sbin/nft
 
 # The shipped socket has no ListenStream= (the site's drop-in supplies it), so
 # verify a scratch copy of the units with the example drop-in installed, under
-# a scratch --root holding a stub /usr/bin/tcp-split and /usr/sbin/nft (the units name them).
+# a scratch --root holding a stub /usr/bin/tcp-split (the service names it).
 mkdir -p "$root/tmp"
 fakeroot=$root/tmp/unitroot
 units=$fakeroot/usr/lib/systemd/system
 scratch=$root/tmp/redirect-check.nft
 trap 'rm -rf "$fakeroot"; rm -f "$scratch"' EXIT
 mkdir -p "$units/tcp-split.socket.d"
-mkdir -p "$fakeroot/usr/bin" "$fakeroot/usr/sbin"
-for stub in usr/bin/tcp-split usr/sbin/nft; do
-	printf '#!/bin/sh\n' > "$fakeroot/$stub"
-	chmod 0755 "$fakeroot/$stub"
-done
+mkdir -p "$fakeroot/usr/bin"
+printf '#!/bin/sh\n' > "$fakeroot/usr/bin/tcp-split"
+chmod 0755 "$fakeroot/usr/bin/tcp-split"
 # The units' default dependencies (Requires=sysinit.target and the like) must
 # resolve inside --root: systemd 255 (Ubuntu 24.04) refuses the start job
 # otherwise, so the scratch root gets the host's standard targets.
 cp /usr/lib/systemd/system/*.target "$units/"
-cp "$here"/systemd/tcp-split.socket "$here"/systemd/tcp-split.service \
-	"$here"/systemd/tcp-split-redirect.service "$units/"
+cp "$here"/systemd/tcp-split.socket "$here"/systemd/tcp-split.service "$units/"
 cp "$here/examples/10-listen.conf" "$units/tcp-split.socket.d/10-listen.conf"
 systemd-analyze verify --root="$fakeroot" \
 	"$units/tcp-split.socket" \
-	"$units/tcp-split.service" \
-	"$units/tcp-split-redirect.service"
+	"$units/tcp-split.service"
 
 # nft -c needs netlink, and `fib daddr oif "<name>"` is resolved against real
 # interfaces, so the example is checked with defines for "lo".

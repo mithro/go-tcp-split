@@ -39,3 +39,6 @@ SystemCallFilter=~@privileged @resources
 UMask=0077
 LimitNOFILE=65536
 Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
