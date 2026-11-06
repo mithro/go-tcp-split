@@ -8,7 +8,7 @@
 
 A forwarded TCP connection from the laptop is terminated on the VPN server and re-originated from it, so the lossy tunnel leg runs on a server-side BBR socket while the clean leg runs the destination's own congestion control; and if the proxy is not running, the interception rules are gone and the kernel forwards as before.
 
-Reading left to right: a TCP connection from the laptop arrives on `vps` through the WireGuard tunnel on `wg-laptop`, and the `prerouting` rule redirects it to the proxy's port only if the kernel would route its destination out of `eth0`; anything else is forwarded through the VPN table as before. `tcp-split` recovers the original destination with `SO_ORIGINAL_DST`, checks it against its policy and connection limit, dials it from the host itself and relays bytes both ways. Below, the redirect unit is `BindsTo=` the socket unit, so stopping the socket deletes the `inet tcp_split` table and interception stops with it.
+Reading left to right: traffic from the laptop arrives on `vps` through the WireGuard tunnel on `wg-laptop`, and the `prerouting` rule redirects a connection to the proxy's port only if it is TCP, its destination is not local, and the kernel would route that destination out of `eth0`; everything else is handled by the VPN table as before (forward or input chain, masquerade). `tcp-split` recovers the original destination with `SO_ORIGINAL_DST`, checks it against its policy and connection limit, dials it from `vps`'s own address and relays bytes both ways. Below, `tcp-split.socket` `Wants=` the redirect unit, which loads the `inet tcp_split` table, and the redirect unit is `BindsTo=` the socket, so stopping the socket deletes the table and interception stops with it.
 
 ## Install
 
