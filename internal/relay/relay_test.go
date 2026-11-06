@@ -210,3 +210,12 @@ func TestResetSendsRST(t *testing.T) {
 		t.Fatalf("err = %v, want ECONNRESET", err)
 	}
 }
+
+// An idle timeout under 4ns made NewTicker(idle/4) panic.
+func TestTinyIdleDoesNotPanic(t *testing.T) {
+	r := start(t, context.Background(), time.Nanosecond)
+	res := wait(t, r, 2*time.Second)
+	if !errors.Is(res.Err, ErrIdle) {
+		t.Fatalf("Err = %v", res.Err)
+	}
+}

@@ -26,7 +26,7 @@ var Version = "dev"
 func Main(args []string, stdout, stderr io.Writer) int {
 	cfg, version, err := parseArgs(args, stderr)
 	if err != nil {
-		// The flag package has already printed the message and usage.
+		// The flag package or parseArgs has already printed the message.
 		return 2
 	}
 	if version {

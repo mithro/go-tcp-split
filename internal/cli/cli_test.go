@@ -143,3 +143,66 @@ func TestMainEndToEnd(t *testing.T) {
 		t.Fatalf("out=%q", out.String())
 	}
 }
+
+// Stray positional arguments would silently drop every flag
+// after them (flag stops at the first non-flag), e.g. deny prefixes.
+func TestParseArgsRejectsPositional(t *testing.T) {
+	var errb bytes.Buffer
+	_, _, err := parseArgs([]string{"--deny", "10.0.0.0/8", "172.16.0.0/12", "--deny", "fc00::/7"}, &errb)
+	if err == nil {
+		t.Fatal("expected error for stray positional argument")
+	}
+	if !strings.Contains(err.Error(), "172.16.0.0/12") {
+		t.Fatalf("error does not name the stray argument: %v", err)
+	}
+	var out bytes.Buffer
+	errb.Reset()
+	if rc := Main([]string{"--listen", "127.0.0.1:0", "stray"}, &out, &errb); rc != 2 {
+		t.Fatalf("Main rc=%d, want 2", rc)
+	}
+	if !strings.Contains(errb.String(), "stray") {
+		t.Fatalf("stderr=%q", errb.String())
+	}
+}
+
+func TestParseArgsRejectsNegative(t *testing.T) {
+	for _, args := range [][]string{
+		{"--connect-timeout", "-1s"},
+		{"--keepalive", "-1s"},
+		{"--idle-timeout", "-1s"},
+		{"--stats-interval", "-1s"},
+		{"--drain", "-1s"},
+		{"--max-conns", "-1"},
+	} {
+		var errb bytes.Buffer
+		_, _, err := parseArgs(args, &errb)
+		if err == nil {
+			t.Errorf("%v: expected error", args)
+			continue
+		}
+		if !strings.Contains(err.Error(), strings.TrimPrefix(args[0], "--")) {
+			t.Errorf("%v: error does not name the flag: %v", args, err)
+		}
+	}
+}
+
+func TestParseArgsIdleTimeoutTooSmall(t *testing.T) {
+	for _, v := range []string{"1ns", "3ns", "999us"} {
+		var errb bytes.Buffer
+		if _, _, err := parseArgs([]string{"--idle-timeout", v}, &errb); err == nil || !strings.Contains(err.Error(), "idle-timeout") {
+			t.Errorf("--idle-timeout %s: err=%v, want rejection", v, err)
+		}
+	}
+	for _, v := range []string{"0", "1ms", "10m"} {
+		var errb bytes.Buffer
+		if _, _, err := parseArgs([]string{"--idle-timeout", v}, &errb); err != nil {
+			t.Errorf("--idle-timeout %s: unexpected error %v", v, err)
+		}
+	}
+	// Zero values keep their documented meanings.
+	var errb bytes.Buffer
+	if _, _, err := parseArgs([]string{"--max-conns", "0", "--keepalive", "0", "--connect-timeout", "0",
+		"--stats-interval", "0", "--drain", "0"}, &errb); err != nil {
+		t.Errorf("zero values rejected: %v", err)
+	}
+}

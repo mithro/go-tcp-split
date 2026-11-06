@@ -60,13 +60,15 @@ The daemon takes its listening sockets from systemd socket activation; `--listen
 | `--deny` | none | CIDR destination to refuse (repeatable) |
 | `--connect-timeout` | `10s` | upstream connect timeout |
 | `--keepalive` | `60s` | TCP keepalive period |
-| `--idle-timeout` | `0` | close connections idle this long (0 disables) |
-| `--max-conns` | `4096` | maximum concurrent connections |
+| `--idle-timeout` | `0` | close connections idle this long (0 disables; otherwise at least `1ms`) |
+| `--max-conns` | `4096` | maximum concurrent connections (0 means unlimited) |
 | `--congestion` | `""` | TCP congestion control algorithm (empty keeps the system default) |
 | `--stats-interval` | `5m` | interval between stats log lines (0 disables) |
 | `--drain` | `30s` | graceful shutdown drain time |
 | `--verbose` | off | verbose logging |
 | `--version` | | print version and exit |
+
+Every value needs its own flag (`--deny A --deny B`, not `--deny A B`): a stray positional argument, a negative duration or a negative `--max-conns` is an error and the daemon exits 2 with a message rather than silently ignoring the rest of the command line.
 
 Each connection logs one line with a `result=` field, one of:
 

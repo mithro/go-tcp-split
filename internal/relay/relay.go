@@ -99,7 +99,9 @@ func Run(ctx context.Context, client, upstream *net.TCPConn, idle time.Duration)
 		aux.Add(1)
 		go func() {
 			defer aux.Done()
-			tick := time.NewTicker(idle / 4)
+			// The CLI rejects idle timeouts under 1ms; clamp anyway so a
+			// tiny value can never make NewTicker panic.
+			tick := time.NewTicker(max(idle/4, time.Millisecond))
 			defer tick.Stop()
 			last, lastChange := moved.Load(), time.Now()
 			for {
