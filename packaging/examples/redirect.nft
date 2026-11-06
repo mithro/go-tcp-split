@@ -1,0 +1,31 @@
+# /etc/tcp-split/redirect.nft
+#
+# Uncomment and edit these three lines for the site (nft refuses to redefine
+# a symbol, so they must appear exactly once, before the table below):
+# define VPN_IFS = { "wg-laptop" }
+# define WAN_IF = "eth0"
+# define PORT = 10443
+
+# create/delete/create makes loading idempotent.
+table inet tcp_split {}
+delete table inet tcp_split
+
+table inet tcp_split {
+	chain prerouting {
+		type nat hook prerouting priority dstnat - 10; policy accept;
+		# Redirect only what the kernel would route out of the WAN interface.
+		iifname $VPN_IFS meta l4proto tcp fib daddr type != local fib daddr oif $WAN_IF counter redirect to :$PORT
+	}
+
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		# Defence in depth behind the non-wildcard listeners.
+		iifname != $VPN_IFS tcp dport $PORT counter drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		# Optional QUIC reject (on by default): browsers fall back to TCP.
+		iifname $VPN_IFS udp dport 443 counter reject
+	}
+}

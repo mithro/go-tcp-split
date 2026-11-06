@@ -1,0 +1,38 @@
+[Unit]
+Description=tcp-split split-TCP proxy
+Requires=tcp-split.socket
+After=tcp-split.socket
+
+[Service]
+EnvironmentFile=-/etc/default/tcp-split
+ExecStart=/usr/bin/tcp-split $TCP_SPLIT_OPTS
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+SocketBindDeny=any
+TemporaryFileSystem=/:ro
+BindReadOnlyPaths=/usr/bin/tcp-split
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+LimitNOFILE=65536
+Restart=on-failure

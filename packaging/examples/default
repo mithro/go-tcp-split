@@ -1,0 +1,2 @@
+# /etc/default/tcp-split: read by systemd (EnvironmentFile=), not by the daemon.
+TCP_SPLIT_OPTS="--deny 10.0.0.0/8 --deny 172.16.0.0/12 --deny 192.168.0.0/16 --deny fc00::/7"

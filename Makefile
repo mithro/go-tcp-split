@@ -6,6 +6,7 @@ VERSION ?= dev
 .PHONY: test vet build fmt-check
 
 test:
+	sh packaging/check-units.sh
 	$(GO) test ./...
 
 vet:

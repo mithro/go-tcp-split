@@ -1,0 +1,13 @@
+[Unit]
+Description=tcp-split listening sockets
+Wants=tcp-split-redirect.service
+
+[Socket]
+# ListenStream= comes from a site drop-in (see examples/10-listen.conf):
+# one line per tunnel server address, never a wildcard.
+Accept=no
+FreeBind=yes
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
