@@ -144,11 +144,25 @@ def prepare_run_dir():
         os.makedirs("/run/netns", exist_ok=True)
 
 
+def existing_namespaces():
+    """Exact names from `ip netns list` (first token of each line)."""
+    return {ln.split()[0] for ln in run(["ip", "netns", "list"]).stdout.splitlines() if ln.split()}
+
+
+# Namespaces this run created; cleanup deletes only these.
+CREATED = []
+# Connections the redirect rule is expected to have split so far.
+SPLIT = [0]
+
+
 def build_topology():
     for ns in NAMESPACES:
-        if ns in run(["ip", "netns", "list"]).stdout:
-            run(["ip", "netns", "del", ns])
+        if ns in existing_namespaces():
+            raise RuntimeError("network namespace %r already exists; refusing to touch it. "
+                               "Remove it (`ip netns del %s`) and re-run." % (ns, ns))
+    for ns in NAMESPACES:
         run(["ip", "netns", "add", ns])
+        CREATED.append(ns)
         nsrun(ns, "ip", "link", "set", "lo", "up")
     run(["ip", "-n", "client", "link", "add", "veth-c0", "type", "veth",
          "peer", "name", "veth-c", "netns", "server"])
@@ -244,6 +258,7 @@ def probe(name, *args):
 def check_echo(d, addr, dst_log):
     since = d.nlines()
     r = probe("echo", addr, ECHO_PORT)
+    SPLIT[0] += 1  # the probe connected through the redirect
     if r["received"] != SIZE or not r["match"]:
         return False, "echo mismatch: %r" % r
     ln = d.wait_line(r"dst=\"?%s\"? .*result=ok" % re.escape(dst_log), since)
@@ -263,6 +278,8 @@ def echo_v6(d):
 def check_reset(d, addr, port, result):
     since = d.nlines()
     r = probe("connect", addr, port)
+    if result == "denied" and r["connect"] == "ok":
+        SPLIT[0] += 1  # redirected, then refused by the proxy
     if "ECONNRESET" not in (r["connect"], r["read"]):
         return False, "expected ECONNRESET, got %r" % r
     ln = d.wait_line(r"result=%s" % result, since)
@@ -303,7 +320,7 @@ def nft_counters(d):
     md = re.search(r"packets (\d+)", drop[0]) if drop else None
     if not md:
         return False, "no drop counter in:\n" + out_in
-    want = 3  # echo_v4 + echo_v6 + denied
+    want = SPLIT[0]
     if n != want or int(md.group(1)) != 0:
         return False, "redirect packets=%d (want %d), input drop packets=%s (want 0)" % (
             n, want, md.group(1))
@@ -344,10 +361,8 @@ def main():
     daemon = None
     echos = []
     failed = 0
-    created = False
     try:
         prepare_run_dir()
-        created = True
         build_topology()
         load_nft(workdir)
         for addr in ("10.99.1.2", "fd99:1::2"):
@@ -388,10 +403,8 @@ def main():
             for p in echos:
                 p.terminate()
                 p.wait()
-            if created:
-                for ns in NAMESPACES:
-                    if ns in run(["ip", "netns", "list"]).stdout:
-                        run(["ip", "netns", "del", ns])
+            for ns in CREATED:
+                run(["ip", "netns", "del", ns])
             shutil.rmtree(workdir, ignore_errors=True)
     return 1 if failed else 0
 

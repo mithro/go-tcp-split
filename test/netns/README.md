@@ -52,4 +52,4 @@ Facts about the unprivileged path:
 | `direct_connect_reset` | a direct connection to the proxy port is not a redirect: client sees `ECONNRESET`, log `result=not-redirected` |
 | `denied` | `--deny 10.99.2.0/24` destinations are reset without dialling, log `result=denied` |
 | `local_not_split` | traffic to the server itself (`10.99.0.1:22`) is excluded by `fib daddr type != local`: `ECONNREFUSED` and no proxy log line |
-| `nft_counters` | the `redirect` rule counted exactly 3 packets (echo_v4, echo_v6, denied; only SYNs traverse the nat hook) and the `input` guard drop counter is 0 |
+| `nft_counters` | the `redirect` rule counted as many packets as connections the harness made through the redirect (echo_v4, echo_v6, denied: 3; only SYNs traverse the nat hook) and the `input` guard drop counter is 0 |
