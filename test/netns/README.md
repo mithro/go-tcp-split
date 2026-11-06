@@ -10,7 +10,13 @@ binary intercept IPv4 and IPv6 TCP end to end.
  fd99:0::2/64              fd99:0::1/64 fd99:1::1/64        fd99:1::2/64
                            nft table inet tcp_split         echo servers :8080
                            tcp-split --listen :10443        (v4 and v6)
+                           veth-l ------------------------- veth-l0   lan ns
+                           10.99.3.1/24                     10.99.3.9/24
+                                                            echo server :8080
 ```
+
+`lan` is a network behind the server that is not the WAN (`veth-i`), standing
+in for anything the server routes elsewhere (another tunnel, a LAN).
 
 The harness prepends `define VPN_IFS = { "veth-c" }`, `define WAN_IF = "veth-i"`
 and `define PORT = 10443` to `packaging/examples/redirect.nft` (the shipped file
@@ -52,4 +58,14 @@ Facts about the unprivileged path:
 | `direct_connect_reset` | a direct connection to the proxy port is not a redirect: client sees `ECONNRESET`, log `result=not-redirected` |
 | `denied` | `--deny 10.99.2.0/24` destinations are reset without dialling, log `result=denied` |
 | `local_not_split` | traffic to the server itself (`10.99.0.1:22`) is excluded by `fib daddr type != local`: `ECONNREFUSED` and no proxy log line |
-| `nft_counters` | the `redirect` rule counted as many packets as connections the harness made through the redirect (echo_v4, echo_v6, denied: 3; only SYNs traverse the nat hook) and the `input` guard drop counter is 0 |
+| `not_wan_not_split` | a destination routed out of a non-WAN interface (`10.99.3.9:8080` in `lan`) is forwarded, never split: the 1 MiB echo works, the `redirect` counter does not move (`fib daddr oif $WAN_IF` does not match) and the proxy logs nothing (anti-goal 1) |
+| `input_guard` | a non-tunnel host cannot reach the proxy port: from `internet`, a connect to the listener `10.99.0.1:10443` times out (2 s) rather than being accepted or refused, the `input` drop counter rises by exactly the SYNs the kernel sent (1 + retransmissions, read from `TCP_INFO`; 2 in a 2 s window), and the proxy logs nothing (anti-goal 2) |
+| `nft_counters` | the `redirect` rule counted as many packets as connections the harness made through the redirect (echo_v4, echo_v6, denied: 3; only SYNs traverse the nat hook) and the `input` drop counter equals the SYNs `input_guard` saw dropped, so nothing else was dropped |
+
+## Not covered here
+
+The spec's Testing section also lists "stopping the proxy drops the redirect
+table". That is a systemd property (`tcp-split-redirect.service` is
+`BindsTo=tcp-split.socket`, and its `ExecStop=` deletes the table), and this
+harness runs no systemd. It is proven on a real host instead: the transient-unit proof
+on the VPN server and the site deployment's own verify pass (acceptance item 5).

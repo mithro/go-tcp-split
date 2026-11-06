@@ -2,8 +2,11 @@
 """Network-namespace end-to-end harness for tcp-split (stdlib only).
 
 Topology:  client --veth-- server --veth-- internet
+                              server --veth-- lan
 The real packaging/examples/redirect.nft is loaded in `server`, the real
 binary runs there, and an echo server in `internet` is the destination.
+`lan` is a non-WAN network behind the server: traffic to it must be
+forwarded, never split.
 See test/netns/README.md.  Must run as (namespace) root.
 """
 import argparse
@@ -22,7 +25,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 NFT_EXAMPLE = os.path.join(ROOT, "packaging", "examples", "redirect.nft")
-NAMESPACES = ("client", "server", "internet")
+NAMESPACES = ("client", "server", "internet", "lan")
+LAN_HOST = "10.99.3.9"
 PORT = 10443
 ECHO_PORT = 8080
 SIZE = 1 << 20
@@ -84,17 +88,25 @@ def probe_echo(addr, port):
     return {"received": len(got), "match": bytes(got) == payload}
 
 
-def probe_connect(addr, port):
-    """Connect, then try to read; report errnos by name."""
+def probe_connect(addr, port, timeout=5):
+    """Connect, then try to read; report errnos by name.  A connect that
+    times out also reports `syns`, the SYNs the kernel sent (1 + its SYN
+    retransmissions, from TCP_INFO), so a dropping firewall's counter can be
+    checked exactly."""
     fam = socket.AF_INET6 if ":" in addr else socket.AF_INET
     s = socket.socket(fam, socket.SOCK_STREAM)
-    s.settimeout(5)
+    s.settimeout(float(timeout))
     res = {"connect": None, "read": None}
     try:
         s.connect((addr, port))
         res["connect"] = "ok"
     except OSError as e:
         res["connect"] = errname(e)
+        if isinstance(e, TimeoutError):
+            # struct tcp_info: tcpi_total_retrans is the u32 at offset 100.
+            info = s.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+            res["syns"] = 1 + int.from_bytes(info[100:104], sys.byteorder)
+        s.close()
         return res
     try:
         data = s.recv(1)
@@ -153,6 +165,8 @@ def existing_namespaces():
 CREATED = []
 # Connections the redirect rule is expected to have split so far.
 SPLIT = [0]
+# Packets the input guard is expected to have dropped so far.
+DROPPED = [0]
 
 
 def build_topology():
@@ -168,6 +182,10 @@ def build_topology():
          "peer", "name", "veth-c", "netns", "server"])
     run(["ip", "-n", "internet", "link", "add", "veth-i0", "type", "veth",
          "peer", "name", "veth-i", "netns", "server"])
+    # A third server interface that is not the WAN: `fib daddr oif` must not
+    # match traffic routed out of it.
+    run(["ip", "-n", "lan", "link", "add", "veth-l0", "type", "veth",
+         "peer", "name", "veth-l", "netns", "server"])
 
     def addr(ns, dev, *addrs):
         for a in addrs:
@@ -177,6 +195,8 @@ def build_topology():
     addr("server", "veth-c", "10.99.0.1/24", "fd99:0::1/64")
     addr("server", "veth-i", "10.99.1.1/24", "fd99:1::1/64")
     addr("internet", "veth-i0", "10.99.1.2/24", "fd99:1::2/64")
+    addr("server", "veth-l", "10.99.3.1/24")
+    addr("lan", "veth-l0", LAN_HOST + "/24")
     run(["ip", "-n", "client", "route", "add", "default", "via", "10.99.0.1"])
     run(["ip", "-n", "client", "-6", "route", "add", "default", "via", "fd99:0::1"])
     # The denied target: routed via the server, which sends it WAN-ward so the
@@ -185,6 +205,7 @@ def build_topology():
     run(["ip", "-n", "server", "route", "add", "10.99.2.0/24", "via", "10.99.1.2"])
     run(["ip", "-n", "internet", "route", "add", "default", "via", "10.99.1.1"])
     run(["ip", "-n", "internet", "-6", "route", "add", "default", "via", "fd99:1::1"])
+    run(["ip", "-n", "lan", "route", "add", "default", "via", "10.99.3.1"])
     nsrun("server", "sysctl", "-w", "net.ipv4.ip_forward=1")
     nsrun("server", "sysctl", "-w", "net.ipv6.conf.all.forwarding=1")
 
@@ -247,8 +268,8 @@ class Daemon:
         self.logf.close()
 
 
-def probe(name, *args):
-    out = run(ns_exec("client", sys.executable, os.path.abspath(__file__),
+def probe(name, *args, ns="client"):
+    out = run(ns_exec(ns, sys.executable, os.path.abspath(__file__),
                       "--probe", name, *map(str, args)), timeout=60).stdout
     return json.loads(out.strip().splitlines()[-1])
 
@@ -278,13 +299,15 @@ def echo_v6(d):
 def check_reset(d, addr, port, result):
     since = d.nlines()
     r = probe("connect", addr, port)
-    if result == "denied" and r["connect"] == "ok":
-        SPLIT[0] += 1  # redirected, then refused by the proxy
     if "ECONNRESET" not in (r["connect"], r["read"]):
         return False, "expected ECONNRESET, got %r" % r
     ln = d.wait_line(r"result=%s" % result, since)
     if ln is None:
         return False, "no log line with result=%s" % result
+    if result == "denied":
+        # The proxy saw it, so the redirect rule matched its SYN, whether or
+        # not the reset beat the client's connect() completion.
+        SPLIT[0] += 1
     return True, "%r; %s" % (r, ln)
 
 
@@ -308,26 +331,68 @@ def local_not_split(d):
     return True, "ECONNREFUSED and no proxy log line"
 
 
+def counter(chain, keyword):
+    """Packets counted by the first rule of a tcp_split chain containing keyword."""
+    out = nsrun("server", "nft", "list", "chain", "inet", "tcp_split", chain).stdout
+    rules = [ln for ln in out.splitlines() if keyword in ln]
+    m = re.search(r"packets (\d+)", rules[0]) if rules else None
+    if not m:
+        raise RuntimeError("no %s counter in:\n%s" % (keyword, out))
+    return int(m.group(1))
+
+
+def proxy_lines(d, since):
+    return [ln for ln in d.text().splitlines()[since:] if "msg=connection" in ln or "msg=accept" in ln]
+
+
+def not_wan_not_split(d):
+    """Anti-goal 1: a destination routed out of a non-WAN interface (lan) is
+    forwarded untouched, never split: `fib daddr oif $WAN_IF` must not match."""
+    since, before = d.nlines(), counter("prerouting", "redirect")
+    r = probe("echo", LAN_HOST, ECHO_PORT)
+    time.sleep(0.5)
+    after = counter("prerouting", "redirect")
+    if r["received"] != SIZE or not r["match"]:
+        return False, "forwarded echo to %s failed: %r" % (LAN_HOST, r)
+    if after != before:
+        return False, "redirect counter moved %d -> %d" % (before, after)
+    if proxy_lines(d, since):
+        return False, "proxy logged: %r" % proxy_lines(d, since)
+    return True, "1 MiB echo to %s:%d forwarded; redirect counter unchanged (%d); no proxy line" % (
+        LAN_HOST, ECHO_PORT, after)
+
+
+def input_guard(d):
+    """Anti-goal 2: a non-tunnel host cannot reach the proxy port: from
+    `internet`, a connect to the listener address is dropped by the input
+    chain (times out), not accepted or refused."""
+    since, before = d.nlines(), counter("input", "drop")
+    r = probe("connect", "10.99.0.1", PORT, 2, ns="internet")
+    after = counter("input", "drop")
+    if r["connect"] != "TimeoutError":
+        return False, "expected a connect timeout (dropped), got %r" % r
+    DROPPED[0] += r["syns"]
+    if after - before != r["syns"]:
+        return False, "input drop counter moved by %d, want %d (one per SYN sent)" % (
+            after - before, r["syns"])
+    time.sleep(0.5)
+    if proxy_lines(d, since):
+        return False, "proxy logged: %r" % proxy_lines(d, since)
+    return True, "%r; input drop counter +%d (one per SYN); no proxy line" % (r, after - before)
+
+
 def nft_counters(d):
-    out = nsrun("server", "nft", "list", "chain", "inet", "tcp_split", "prerouting").stdout
-    redirect = [ln for ln in out.splitlines() if "redirect" in ln]
-    mm = re.search(r"packets (\d+)", redirect[0]) if redirect else None
-    if not mm:
-        return False, "no redirect counter in:\n" + out
-    n = int(mm.group(1))
-    out_in = nsrun("server", "nft", "list", "chain", "inet", "tcp_split", "input").stdout
-    drop = [ln for ln in out_in.splitlines() if "drop" in ln]
-    md = re.search(r"packets (\d+)", drop[0]) if drop else None
-    if not md:
-        return False, "no drop counter in:\n" + out_in
-    want = SPLIT[0]
-    if n != want or int(md.group(1)) != 0:
-        return False, "redirect packets=%d (want %d), input drop packets=%s (want 0)" % (
-            n, want, md.group(1))
-    return True, "redirect packets=%d, input drop packets=0" % n
+    n = counter("prerouting", "redirect")
+    drops = counter("input", "drop")
+    want, want_drops = SPLIT[0], DROPPED[0]
+    if n != want or drops != want_drops:
+        return False, "redirect packets=%d (want %d), input drop packets=%d (want %d)" % (
+            n, want, drops, want_drops)
+    return True, "redirect packets=%d, input drop packets=%d" % (n, drops)
 
 
-CHECKS = [echo_v4, echo_v6, direct_connect_reset, denied, local_not_split, nft_counters]
+CHECKS = [echo_v4, echo_v6, direct_connect_reset, denied, local_not_split,
+          not_wan_not_split, input_guard, nft_counters]
 
 
 # ----------------------------------------------------------------- main ----
@@ -346,7 +411,7 @@ def main():
     if a.probe:
         name, args = a.probe[0], a.probe[1:]
         fn = {"echo": probe_echo, "connect": probe_connect}[name]
-        print(json.dumps(fn(args[0], int(args[1]))))
+        print(json.dumps(fn(args[0], int(args[1]), *args[2:])))
         return 0
 
     if os.geteuid() != 0:
@@ -365,8 +430,8 @@ def main():
         prepare_run_dir()
         build_topology()
         load_nft(workdir)
-        for addr in ("10.99.1.2", "fd99:1::2"):
-            p = subprocess.Popen(ns_exec("internet", sys.executable, os.path.abspath(__file__),
+        for ns, addr in (("internet", "10.99.1.2"), ("internet", "fd99:1::2"), ("lan", LAN_HOST)):
+            p = subprocess.Popen(ns_exec(ns, sys.executable, os.path.abspath(__file__),
                                          "--echo-server", addr, str(ECHO_PORT)),
                                  stdout=subprocess.PIPE, text=True)
             echos.append(p)
@@ -393,9 +458,9 @@ def main():
             print("--- daemon log ---\n" + daemon.text() + "--- end daemon log ---")
     finally:
         if a.keep:
-            print("--keep: left namespaces client/server/internet, processes and %s in place.\n"
+            print("--keep: left namespaces client/server/internet/lan, processes and %s in place.\n"
                   "Inspect with `ip netns exec server nft list ruleset`; clean up with "
-                  "`ip netns del client; ip netns del server; ip netns del internet` "
+                  "`ip netns del client; ip netns del server; ip netns del internet; ip netns del lan` "
                   "(inside the same user namespace if unprivileged; it ends with it)." % workdir)
         else:
             if daemon:
