@@ -79,3 +79,5 @@ Each connection logs one line with a `result=` field, one of:
 - `limit`: refused because `--max-conns` was reached.
 - `idle`: closed by `--idle-timeout`.
 - `error`: the relay ended on an I/O error or reset.
+
+Only `ok` (both directions ended with a normal close) closes the two connections normally. Every other result resets them: a refused connection is reset, and a relay that ends on an error, an idle timeout or a forced drain resets both sides, so neither peer can mistake an aborted transfer for a complete one.

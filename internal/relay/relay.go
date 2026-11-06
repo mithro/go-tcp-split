@@ -39,23 +39,35 @@ func (c countingWriter) Write(p []byte) (int, error) {
 // Run copies bytes in both directions until both are done, one fails, the
 // context is cancelled or the idle timeout fires. Both conns are closed
 // before it returns. idle <= 0 disables the idle timeout.
+//
+// Only a clean end (EOF in both directions) closes the conns normally. On any
+// other end (a copy error such as a peer's reset, the idle timeout, or ctx
+// cancellation, e.g. a forced drain) both conns are reset, so
+// neither peer can mistake an aborted transfer for a complete one.
 func Run(ctx context.Context, client, upstream *net.TCPConn, idle time.Duration) Result {
 	var (
-		mu    sync.Mutex
-		cause error
-		moved atomic.Int64
+		mu       sync.Mutex
+		cause    error
+		finished bool // both copies ended; late ctx/idle events are ignored
+		moved    atomic.Int64
 	)
-	// fail records the first cause and tears both conns down, which makes
-	// the other io.Copy return with a secondary "closed" error that is
-	// ignored because cause is already set.
+	// fail records the first cause and resets both conns, which makes the
+	// other io.Copy return with a secondary "closed" error that is ignored
+	// because cause is already set. Once both copies have finished cleanly
+	// it does nothing: resetting then could discard data still queued in a
+	// send buffer behind the FIN.
 	fail := func(err error) {
 		mu.Lock()
+		if finished {
+			mu.Unlock()
+			return
+		}
 		if cause == nil {
 			cause = err
 		}
 		mu.Unlock()
-		client.Close()
-		upstream.Close()
+		Reset(client)
+		Reset(upstream)
 	}
 
 	// When idle == 0 the raw *net.TCPConn is the destination, so io.Copy
@@ -121,6 +133,9 @@ func Run(ctx context.Context, client, upstream *net.TCPConn, idle time.Duration)
 	}
 
 	wg.Wait()
+	mu.Lock()
+	finished = true
+	mu.Unlock()
 	close(done)
 	aux.Wait()
 	client.Close()

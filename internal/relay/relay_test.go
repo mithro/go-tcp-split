@@ -131,16 +131,11 @@ func TestUpstreamReset(t *testing.T) {
 	r.upstream.SetLinger(0)
 	r.upstream.Close()
 	res := wait(t, r, 2*time.Second)
-	if res.Err == nil {
-		t.Fatal("expected non-nil Err")
+	if !errors.Is(res.Err, syscall.ECONNRESET) {
+		t.Fatalf("Err = %v, want ECONNRESET (not a secondary close error)", res.Err)
 	}
-	if errors.Is(res.Err, net.ErrClosed) {
-		t.Fatalf("Err is secondary close error: %v", res.Err)
-	}
-	r.client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := r.client.Read(buf); err == nil {
-		t.Fatal("client read should fail")
-	}
+	// The abort is relayed as an abort, never as a clean EOF.
+	expectRST(t, r.client)
 	// Close the test's own conns, then expect goroutines to settle.
 	r.client.Close()
 	deadline := time.Now().Add(2 * time.Second)
@@ -152,12 +147,48 @@ func TestUpstreamReset(t *testing.T) {
 	}
 }
 
+// expectRST requires the next read on c to fail with ECONNRESET (an RST from
+// the relay), not EOF (a FIN) or a timeout.
+func expectRST(t *testing.T, c *net.TCPConn) {
+	t.Helper()
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := c.Read(make([]byte, 64))
+	if !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("read err = %v, want ECONNRESET", err)
+	}
+}
+
+// The other direction: a client RST reaches the upstream as RST,
+// so the server never mistakes a truncated upload for a complete one.
+func TestClientReset(t *testing.T) {
+	for _, idle := range []time.Duration{0, time.Minute} {
+		r := start(t, context.Background(), idle)
+		if _, err := r.client.Write([]byte("partial upload")); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 14)
+		if _, err := io.ReadFull(r.upstream, buf); err != nil {
+			t.Fatal(err)
+		}
+		r.client.SetLinger(0)
+		r.client.Close()
+		res := wait(t, r, 2*time.Second)
+		if !errors.Is(res.Err, syscall.ECONNRESET) {
+			t.Fatalf("idle=%v: Err = %v, want ECONNRESET", idle, res.Err)
+		}
+		expectRST(t, r.upstream)
+	}
+}
+
 func TestIdle(t *testing.T) {
 	r := start(t, context.Background(), 200*time.Millisecond)
 	res := wait(t, r, time.Second)
 	if !errors.Is(res.Err, ErrIdle) {
 		t.Fatalf("Err = %v", res.Err)
 	}
+	// An idle timeout is not a clean end; both peers see RST.
+	expectRST(t, r.client)
+	expectRST(t, r.upstream)
 }
 
 func TestIdleResetByTraffic(t *testing.T) {
@@ -189,6 +220,9 @@ func TestContextCancel(t *testing.T) {
 	if !errors.Is(res.Err, context.Canceled) {
 		t.Fatalf("Err = %v", res.Err)
 	}
+	// A cancelled (force-drained) relay resets both peers.
+	expectRST(t, r.client)
+	expectRST(t, r.upstream)
 	r.client.Close()
 	r.upstream.Close()
 	deadline := time.Now().Add(2 * time.Second)
