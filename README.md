@@ -46,6 +46,10 @@ The package ships three systemd units (see `packaging/README.md`) and enables no
 
 The fail-open chain: the redirect unit is `BindsTo=` the socket, so if the socket stops, the redirect table is deleted and traffic forwards as before.
 
+## Firewall: split traffic bypasses the forward chain
+
+Split connections originate from the host itself. After the redirect, the onward connection to the destination is opened by the `tcp-split` process, so it leaves through the host's `output` path and never traverses the VPN table's `forward` chain. Any per-destination, per-port or per-peer restriction that the `forward` chain applies to tunnel traffic (for example `tcp dport 25 drop`, or a peer limited to some destinations) is therefore bypassed for every split connection. `tcp-split` can reach every destination routed out of `WAN_IF` except the `--deny` prefixes. Such restrictions must instead be expressed in the redirect rule's match in `redirect.nft` (`fib daddr oif $WAN_IF`, plus the `input` guard; traffic the redirect does not match is forwarded and still meets the `forward` chain) and in `--deny`, never only in the `forward` chain. Check the VPN's `forward` chain against this before deploying.
+
 ## Usage
 
 ```
