@@ -374,3 +374,80 @@ func TestStats(t *testing.T) {
 		}
 	}
 }
+
+// flakyListener fails Accept with EMFILE n times before delegating.
+type flakyListener struct {
+	net.Listener
+	mu sync.Mutex
+	n  int
+}
+
+func (f *flakyListener) Accept() (net.Conn, error) {
+	f.mu.Lock()
+	if f.n > 0 {
+		f.n--
+		f.mu.Unlock()
+		return nil, &net.OpError{Op: "accept", Err: syscall.EMFILE}
+	}
+	f.mu.Unlock()
+	return f.Listener.Accept()
+}
+
+func TestAcceptSurvivesEMFILE(t *testing.T) {
+	up := testServer(t)
+	lb := &lockedBuf{}
+	s := New(Options{
+		Logger: slog.New(slog.NewTextHandler(lb, nil)),
+		Lookup: func(*net.TCPConn) (netip.AddrPort, error) { return addrOf(up), nil },
+	})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Serve(context.Background(), []net.Listener{&flakyListener{Listener: l, n: 3}})
+	t.Cleanup(func() { s.Shutdown(100 * time.Millisecond) })
+	c := dial(t, l.Addr().String())
+	c.Write([]byte("hi"))
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	got := make([]byte, 2)
+	if _, err := io.ReadFull(c, got); err != nil || string(got) != "hi" {
+		t.Fatalf("echo = %q, %v", got, err)
+	}
+	if n := strings.Count(lb.String(), "accept failed, retrying"); n != 3 {
+		t.Errorf("warn lines = %d, want 3:\n%s", n, lb.String())
+	}
+}
+
+func TestServeCtxCancelWaitsForHandlers(t *testing.T) {
+	up := testServer(t)
+	lb := &lockedBuf{}
+	s := New(Options{
+		Logger: slog.New(slog.NewTextHandler(lb, nil)),
+		Lookup: func(*net.TCPConn) (netip.AddrPort, error) { return addrOf(up), nil },
+	})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx, []net.Listener{l}) }()
+	c := dial(t, l.Addr().String())
+	c.Write([]byte("x"))
+	io.ReadFull(c, make([]byte, 1))
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	if !strings.Contains(lb.String(), "result=error") {
+		t.Errorf("close line missing at Serve return:\n%s", lb.String())
+	}
+	if a := s.Stats().Active; a != 0 {
+		t.Errorf("Active = %d", a)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/mithro/go-tcp-split/internal/relay"
@@ -91,6 +92,10 @@ func (s *Server) defaultDial(ctx context.Context, dst netip.AddrPort) (*net.TCPC
 
 // Serve accepts on every listener until Shutdown closes them or ctx is done.
 // It returns nil after an orderly shutdown, else the first other accept error.
+// Cancelling ctx is an abort: listeners are closed and live relays are cut
+// immediately; for a graceful drain call Shutdown. Either way Serve returns
+// only after all accept loops and all connection handlers have finished, so
+// no close log line or stats update is lost.
 func (s *Server) Serve(ctx context.Context, ls []net.Listener) error {
 	s.mu.Lock()
 	if s.closed {
@@ -123,6 +128,7 @@ func (s *Server) Serve(ctx context.Context, ls []net.Listener) error {
 		}()
 	}
 	s.loops.Wait()
+	s.handlers.Wait()
 	close(errc)
 	for err := range errc {
 		if err != nil {
@@ -139,19 +145,28 @@ func (s *Server) isClosed() bool {
 }
 
 func (s *Server) acceptLoop(l net.Listener) error {
+	var delay time.Duration
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			if s.isClosed() || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				time.Sleep(50 * time.Millisecond)
+			if isTemporary(err) {
+				// Back off like net/http.Server.Serve: 5ms doubling to 1s.
+				if delay == 0 {
+					delay = 5 * time.Millisecond
+				} else if delay *= 2; delay > time.Second {
+					delay = time.Second
+				}
+				s.log.Warn("accept failed, retrying", "listener", l.Addr().String(), "err", err, "retry_in", delay)
+				time.Sleep(delay)
 				continue
 			}
+			s.log.Error("accept failed, listener stopped", "listener", l.Addr().String(), "err", err)
 			return err
 		}
+		delay = 0
 		tc, ok := c.(*net.TCPConn)
 		if !ok {
 			c.Close()
@@ -163,6 +178,21 @@ func (s *Server) acceptLoop(l net.Listener) error {
 			s.Handle(tc)
 		}()
 	}
+}
+
+// isTemporary reports accept errors worth retrying (fd or memory pressure,
+// aborted handshakes, timeouts).
+func isTemporary(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	for _, e := range []error{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM, syscall.ECONNABORTED} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) closeListeners() {
