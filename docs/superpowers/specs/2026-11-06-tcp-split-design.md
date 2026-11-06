@@ -1,6 +1,6 @@
 # tcp-split: a split-TCP proxy for lossy VPN clients
 
-Status: DRAFT, 2026-11-06. Not approved. Nothing is built.
+Status: implemented; last revised 2026-11-06.
 
 Revision 2026-11-06: the fail-open control plane is withdrawn by the owner
 ("Just make the rules permanent and the server run permanently"). There is
@@ -239,7 +239,9 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6
 SocketBindDeny=any
-TemporaryFileSystem=/:ro
+RuntimeDirectory=tcp-split
+RootDirectory=/run/tcp-split
+MountAPIVFS=yes
 BindReadOnlyPaths=/usr/bin/tcp-split
 PrivateTmp=yes
 PrivateDevices=yes
@@ -350,7 +352,7 @@ confinement, `input` guards and masquerade are unchanged.
   `fib daddr oif "<wan>"` match, the input guard and every tunnel interface;
   `ss -ltn` shows the proxy listening on every tunnel address and nothing
   else; the service's `DynamicUser`, `CapabilityBoundingSet` and
-  `TemporaryFileSystem` properties are as specified; the daemon's version
+  `RootDirectory` properties are as specified; the daemon's version
   matches the installed package.
 - Rollout is non-disruptive: established connections keep their path, new
   ones are split. Disabling is one variable change and a run.
