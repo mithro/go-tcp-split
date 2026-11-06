@@ -25,7 +25,7 @@ func TestParseSockaddr(t *testing.T) {
 		{"ipv4", []byte{2, 0, 0x1f, 0x90, 93, 184, 216, 34, 0, 0, 0, 0, 0, 0, 0, 0}, "93.184.216.34:8080", false},
 		{"ipv6", in6, "[2606:4700::1111]:443", false},
 		{"bad family", []byte{1, 0, 0x1f, 0x90, 93, 184, 216, 34, 0, 0, 0, 0, 0, 0, 0, 0}, "", true},
-		{"short v4", make([]byte, 15), "", true},
+		{"short v4", []byte{2, 0, 0x1f, 0x90, 93, 184, 216, 34, 0, 0, 0, 0, 0, 0, 0}, "", true},
 		{"short v6", append([]byte{10, 0}, make([]byte, 20)...), "", true},
 		{"empty", nil, "", true},
 	}
@@ -89,7 +89,21 @@ func TestSetCongestionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot read default congestion control: %v", err)
 	}
-	want := strings.TrimSpace(string(b))
+	def := strings.TrimSpace(string(b))
+	b, err = os.ReadFile("/proc/sys/net/ipv4/tcp_available_congestion_control")
+	if err != nil {
+		t.Skipf("cannot read available congestion controls: %v", err)
+	}
+	want := ""
+	for _, a := range strings.Fields(string(b)) {
+		if a != def {
+			want = a
+			break
+		}
+	}
+	if want == "" {
+		t.Skipf("no congestion control differing from default %q available", def)
+	}
 	_, srv := pair(t, "127.0.0.1:0")
 	if err := SetCongestion(srv, want); err != nil {
 		t.Fatal(err)
