@@ -2,6 +2,14 @@
 
 `tcp-split` is a split-TCP proxy for lossy VPN clients. A laptop reaches its home network and a remote VPN server through WireGuard tunnels; over a long, lossy path the tunnel legs can see double-digit packet loss and several hundred milliseconds of round-trip time, and a forwarded TCP connection runs the far server's congestion control over that whole lossy path. `tcp-split` makes every forwarded TCP connection terminate on the VPN server (which runs BBR): the server intercepts the connection, opens its own connection to the real destination, and relays bytes both ways, so the lossy leg is always a server-side BBR socket and the clean leg runs over a path with no loss. It is a performance-enhancing proxy, not a privacy, circumvention or security feature.
 
+## How it works
+
+![tcp-split architecture](docs/architecture.svg)
+
+A forwarded TCP connection from the laptop is terminated on the VPN server and re-originated from it, so the lossy tunnel leg runs on a server-side BBR socket while the clean leg runs the destination's own congestion control; and if the proxy is not running, the interception rules are gone and the kernel forwards as before.
+
+Reading left to right: a TCP connection from the laptop arrives on `vps` through the WireGuard tunnel on `wg-laptop`, and the `prerouting` rule redirects it to the proxy's port only if the kernel would route its destination out of `eth0`; anything else is forwarded through the VPN table as before. `tcp-split` recovers the original destination with `SO_ORIGINAL_DST`, checks it against its policy and connection limit, dials it from the host itself and relays bytes both ways. Below, the redirect unit is `BindsTo=` the socket unit, so stopping the socket deletes the `inet tcp_split` table and interception stops with it.
+
 ## Install
 
 From the signed apt repository at <https://mith.ro/go-tcp-split/>, on Debian

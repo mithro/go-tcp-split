@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 680" width="1280" height="680" role="img" aria-label="A forwarded TCP connection from the laptop is terminated on the VPN server and re-originated from it, so the lossy tunnel leg runs on a server-side BBR socket while the clean leg runs the destination's own congestion control; and if the proxy is not running, the interception rules are gone and the kernel forwards as before.">
+  <title>tcp-split architecture</title>
+  <desc>Top: the data path of one redirected connection. The laptop's TCP connection arrives on vps through the WireGuard tunnel (lossy leg) on wg-laptop. An nftables prerouting rule (nat, dstnat - 10) matching iifname wg-laptop, tcp, fib daddr type != local and fib daddr oif eth0 redirects it to port 10443, rewriting the destination to the tunnel's server address while conntrack keeps the original. tcp-split, socket-activated by tcp-split.socket and sandboxed with DynamicUser and an empty read-only root, reads SO_ORIGINAL_DST, applies policy (loop, invalid, --deny) and the connection limit, dials the original destination and relays with splice and half-close. The new connection leaves through eth0 (masquerade for IPv4) on the clean leg to the destination. Traffic the rule does not match (local, or not routed via eth0) bypasses tcp-split and is forwarded through the VPN table as before. The lossy leg ends on a server-side BBR socket; the clean leg runs the destination's congestion control over a lossless path. Bottom: tcp-split.socket holds the listeners on the tunnel server addresses with FreeBind and activates tcp-split.service, which Requires it; tcp-split-redirect.service is BindsTo tcp-split.socket, loads the rules with nft -f redirect.nft and removes them with nft delete table inet tcp_split. If the socket stops, the table is removed and the kernel forwards as before (fail open).</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2328"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0969da"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <g font-family="system-ui, sans-serif" fill="#1f2328">
+
+    <!-- ===== Top band: data path of one redirected connection ===== -->
+    <text x="20" y="36" font-size="13" font-weight="600">Data path of one redirected TCP connection</text>
+
+    <!-- laptop -->
+    <rect x="20" y="170" width="100" height="60" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="70" y="197" font-size="13" font-weight="600" text-anchor="middle">laptop</text>
+    <text x="70" y="214" font-size="11" text-anchor="middle" fill="#59636e">client</text>
+
+    <!-- tunnel (lossy leg) -->
+    <line x1="120" y1="200" x2="238" y2="200" stroke="#1f2328" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="180" y="190" font-size="12" text-anchor="middle">WireGuard tunnel</text>
+    <text x="180" y="218" font-size="11" text-anchor="middle" fill="#59636e">lossy leg</text>
+    <text x="180" y="232" font-size="11" text-anchor="middle" fill="#59636e">(loss, high RTT)</text>
+
+    <!-- vps container -->
+    <rect x="280" y="80" width="740" height="380" rx="8" fill="none" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="296" y="104" font-size="13" font-weight="600">vps</text>
+    <text x="324" y="104" font-size="11" fill="#59636e">VPN server</text>
+
+    <!-- ingress port wg-laptop -->
+    <rect x="240" y="180" width="80" height="40" rx="4" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="280" y="204" font-size="12" text-anchor="middle" font-family="ui-monospace, monospace">wg-laptop</text>
+
+    <!-- wg-laptop -> nft -->
+    <line x1="320" y1="200" x2="358" y2="200" stroke="#1f2328" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="340" y="190" font-size="11" text-anchor="middle">SYN</text>
+
+    <!-- nft decision node -->
+    <rect x="360" y="140" width="220" height="140" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="470" y="162" font-size="12" font-weight="600" text-anchor="middle">nft prerouting</text>
+    <text x="470" y="178" font-size="11" text-anchor="middle" fill="#59636e">(nat, dstnat − 10) · match all:</text>
+    <line x1="376" y1="188" x2="564" y2="188" stroke="#d0d7de" stroke-width="1"/>
+    <g font-family="ui-monospace, monospace" font-size="11">
+      <text x="376" y="210">iifname wg-laptop · tcp</text>
+      <text x="376" y="232">fib daddr type != local</text>
+      <text x="376" y="254">fib daddr oif eth0</text>
+    </g>
+
+    <!-- redirect edge (accent) -->
+    <line x1="580" y1="200" x2="738" y2="200" stroke="#0969da" stroke-width="2.5" marker-end="url(#arrow-accent)"/>
+    <text x="660" y="190" font-size="12" font-weight="600" text-anchor="middle" fill="#0969da">redirect to :10443</text>
+    <g font-size="11" text-anchor="middle" fill="#59636e">
+      <text x="660" y="218">dst rewritten to the</text>
+      <text x="660" y="232">tunnel's server address;</text>
+      <text x="660" y="246">conntrack keeps</text>
+      <text x="660" y="260">the original</text>
+    </g>
+
+    <!-- tcp-split -->
+    <rect x="740" y="100" width="180" height="300" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="2"/>
+    <text x="830" y="124" font-size="13" font-weight="600" text-anchor="middle" font-family="ui-monospace, monospace">tcp-split</text>
+    <g font-size="12">
+      <text x="756" y="152"><tspan font-weight="600">1</tspan>  <tspan font-family="ui-monospace, monospace" font-size="11">SO_ORIGINAL_DST</tspan></text>
+      <text x="756" y="186"><tspan font-weight="600">2</tspan>  policy</text>
+      <text x="756" y="220"><tspan font-weight="600">3</tspan>  limit</text>
+      <text x="756" y="254"><tspan font-weight="600">4</tspan>  dial</text>
+      <text x="756" y="288"><tspan font-weight="600">5</tspan>  relay</text>
+    </g>
+    <g font-size="11" fill="#59636e">
+      <text x="770" y="166">original destination</text>
+      <text x="770" y="200">loop · invalid · --deny</text>
+      <text x="770" y="234">--max-conns</text>
+      <text x="770" y="268">original dst, new socket</text>
+      <text x="770" y="302">splice · half-close</text>
+    </g>
+    <line x1="756" y1="316" x2="904" y2="316" stroke="#d0d7de" stroke-width="1"/>
+    <g font-size="11" fill="#59636e">
+      <text x="756" y="334">socket-activated by</text>
+      <text x="756" y="348" font-family="ui-monospace, monospace">tcp-split.socket</text>
+      <text x="756" y="366">DynamicUser</text>
+      <text x="756" y="380">empty read-only root</text>
+    </g>
+
+    <!-- tcp-split -> eth0 -->
+    <line x1="920" y1="200" x2="978" y2="200" stroke="#1f2328" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="950" y="190" font-size="11" text-anchor="middle">output</text>
+
+    <!-- egress port eth0 -->
+    <rect x="980" y="180" width="80" height="40" rx="4" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="1020" y="204" font-size="12" text-anchor="middle" font-family="ui-monospace, monospace">eth0</text>
+    <rect x="964" y="156" width="112" height="18" fill="#ffffff"/>
+    <text x="1020" y="169" font-size="11" text-anchor="middle" fill="#59636e">masquerade (IPv4)</text>
+
+    <!-- clean leg -->
+    <line x1="1060" y1="200" x2="1158" y2="200" stroke="#1f2328" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="1110" y="218" font-size="11" text-anchor="middle" fill="#59636e">clean leg</text>
+    <text x="1110" y="232" font-size="11" text-anchor="middle" fill="#59636e">no loss</text>
+
+    <!-- destination -->
+    <rect x="1160" y="170" width="100" height="60" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="1210" y="197" font-size="13" font-weight="600" text-anchor="middle">destination</text>
+    <text x="1210" y="214" font-size="11" text-anchor="middle" fill="#59636e">internet</text>
+
+    <!-- bypass (secondary) -->
+    <polyline points="540,280 540,420 1000,420 1000,222" fill="none" stroke="#59636e" stroke-width="1" marker-end="url(#arrow)"/>
+    <text x="780" y="440" font-size="11" text-anchor="middle" fill="#59636e">no match (local or not via eth0) → plain forwarding through the VPN table</text>
+
+    <!-- call-outs (accent) -->
+    <g fill="#0969da" font-size="12" text-anchor="middle">
+      <text x="760" y="36" font-weight="600">lossy leg ends here:</text>
+      <text x="760" y="52">server-side BBR socket</text>
+      <text x="1110" y="36" font-weight="600">clean leg:</text>
+      <text x="1110" y="52">destination's congestion control,</text>
+      <text x="1110" y="68">lossless path</text>
+    </g>
+    <line x1="760" y1="58" x2="760" y2="100" stroke="#0969da" stroke-width="1.5"/>
+    <circle cx="760" cy="100" r="3" fill="#0969da"/>
+    <line x1="1110" y1="74" x2="1110" y2="200" stroke="#0969da" stroke-width="1.5"/>
+    <circle cx="1110" cy="200" r="3" fill="#0969da"/>
+
+    <!-- ===== Bottom band: fail-open control plane ===== -->
+    <line x1="20" y1="480" x2="1260" y2="480" stroke="#d0d7de" stroke-width="1"/>
+    <text x="20" y="524" font-size="13" font-weight="600">Fail-open control plane</text>
+    <text x="20" y="542" font-size="11" fill="#59636e">systemd units</text>
+
+    <!-- loads / removes (dashed, up to nft node) -->
+    <line x1="420" y1="520" x2="420" y2="282" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+    <text x="428" y="380" font-size="11">loads / removes</text>
+
+    <!-- tcp-split-redirect.service -->
+    <rect x="320" y="520" width="300" height="80" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <g font-family="ui-monospace, monospace">
+      <text x="336" y="542" font-size="12" font-weight="600">tcp-split-redirect.service</text>
+      <text x="336" y="564" font-size="11">ExecStart: nft -f redirect.nft</text>
+      <text x="336" y="582" font-size="11">ExecStop: nft delete table inet tcp_split</text>
+    </g>
+
+    <!-- BindsTo -->
+    <line x1="620" y1="560" x2="718" y2="560" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+    <text x="670" y="550" font-size="11" text-anchor="middle">BindsTo</text>
+
+    <!-- tcp-split.socket -->
+    <rect x="720" y="520" width="220" height="80" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="736" y="542" font-size="12" font-weight="600" font-family="ui-monospace, monospace">tcp-split.socket</text>
+    <text x="736" y="564" font-size="11">listeners on the tunnel</text>
+    <text x="736" y="582" font-size="11">server addresses · <tspan font-family="ui-monospace, monospace">FreeBind</tspan></text>
+
+    <!-- activates / Requires -->
+    <line x1="940" y1="560" x2="1038" y2="560" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+    <text x="990" y="550" font-size="11" text-anchor="middle">activates</text>
+    <text x="990" y="576" font-size="11" text-anchor="middle" fill="#59636e">(Requires)</text>
+
+    <!-- tcp-split.service -->
+    <rect x="1040" y="520" width="220" height="80" rx="6" fill="#f6f8fa" stroke="#1f2328" stroke-width="1.5"/>
+    <text x="1056" y="542" font-size="12" font-weight="600" font-family="ui-monospace, monospace">tcp-split.service</text>
+    <text x="1056" y="564" font-size="11">the sandboxed daemon</text>
+    <text x="1056" y="582" font-size="11">(tcp-split above)</text>
+
+    <!-- fail-open annotation -->
+    <text x="320" y="636" font-size="12" font-weight="600">socket stops ⇒ table removed ⇒ kernel forwards as before (fail open)</text>
+
+    <!-- legend -->
+    <line x1="20" y1="660" x2="44" y2="660" stroke="#1f2328" stroke-width="2"/>
+    <text x="50" y="664" font-size="11" fill="#59636e">packet path</text>
+    <line x1="130" y1="660" x2="154" y2="660" stroke="#1f2328" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="160" y="664" font-size="11" fill="#59636e">unit control</text>
+  </g>
+</svg>
