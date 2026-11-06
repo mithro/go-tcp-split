@@ -1,0 +1,47 @@
+# nfpm packaging config — https://nfpm.goreleaser.com/configuration/
+# VERSION and ARCH are expanded from the environment by nfpm at package time
+# (nfpm does not expand them inside contents[].src, so the binary is always
+# packaged from the fixed path ./dist/tcp-split — `make build` first):
+#   VERSION=0.0.post1 ARCH=arm64 nfpm package -p deb -f nfpm.yaml -t dist/
+name: tcp-split
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+# Keep the Debian version exactly as given; without this nfpm re-renders it
+# as semver.
+version_schema: none
+section: net
+priority: optional
+maintainer: Tim 'mithro' Ansell <me@mith.ro>
+description: Split-TCP proxy for lossy VPN clients
+vendor: mithro
+homepage: https://github.com/mithro/go-tcp-split
+license: Apache-2.0
+depends:
+  - nftables
+contents:
+  - src: ./dist/tcp-split
+    dst: /usr/bin/tcp-split
+    file_info:
+      mode: 0755
+  - src: ./packaging/systemd/tcp-split.socket
+    dst: /usr/lib/systemd/system/tcp-split.socket
+  - src: ./packaging/systemd/tcp-split.service
+    dst: /usr/lib/systemd/system/tcp-split.service
+  - src: ./packaging/systemd/tcp-split-redirect.service
+    dst: /usr/lib/systemd/system/tcp-split-redirect.service
+  - src: ./packaging/examples/10-listen.conf
+    dst: /usr/share/doc/tcp-split/examples/10-listen.conf
+  - src: ./packaging/examples/default
+    dst: /usr/share/doc/tcp-split/examples/default
+  - src: ./packaging/examples/redirect.nft
+    dst: /usr/share/doc/tcp-split/examples/redirect.nft
+  - src: ./README.md
+    dst: /usr/share/doc/tcp-split/README.md
+  - src: ./packaging/README.md
+    dst: /usr/share/doc/tcp-split/README.packaging.md
+  - src: ./LICENSE
+    dst: /usr/share/doc/tcp-split/copyright
+scripts:
+  postinstall: packaging/postinstall.sh
+  postremove: packaging/postremove.sh

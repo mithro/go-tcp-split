@@ -2,6 +2,20 @@
 
 `tcp-split` is a split-TCP proxy for lossy VPN clients. A laptop reaches its home network and a remote VPN server through WireGuard tunnels; over a long, lossy path the tunnel legs can see double-digit packet loss and several hundred milliseconds of round-trip time, and a forwarded TCP connection runs the far server's congestion control over that whole lossy path. `tcp-split` makes every forwarded TCP connection terminate on the VPN server (which runs BBR): the server intercepts the connection, opens its own connection to the real destination, and relays bytes both ways, so the lossy leg is always a server-side BBR socket and the clean leg runs over a path with no loss. It is a performance-enhancing proxy, not a privacy, circumvention or security feature.
 
+## Install
+
+<!-- fingerprint filled in once the signing key exists -->
+Key fingerprint: `FINGERPRINT-TBD`
+
+```sh
+sudo install -d -m0755 /etc/apt/keyrings
+curl -fsSL https://mith.ro/go-tcp-split/go-tcp-split.gpg | sudo tee /etc/apt/keyrings/go-tcp-split.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/go-tcp-split.gpg] https://mith.ro/go-tcp-split/trixie/ ./" \
+  | sudo tee /etc/apt/sources.list.d/go-tcp-split.list
+sudo apt update
+sudo apt install tcp-split
+```
+
 ## Status
 
 Under construction.

@@ -2,8 +2,10 @@
 
 GO ?= go
 VERSION ?= dev
+V ?= 0.0.post1
+A ?= $(shell $(GO) env GOARCH)
 
-.PHONY: test vet build fmt-check
+.PHONY: test vet build fmt-check deb
 
 test:
 	sh packaging/check-units.sh
@@ -19,3 +21,7 @@ build:
 
 fmt-check:
 	test -z "$$(gofmt -l .)"
+
+# Debian package in dist/ (needs nfpm and a prior `make build`).
+deb:
+	VERSION=$(V) ARCH=$(A) nfpm package -p deb -f nfpm.yaml -t dist/
