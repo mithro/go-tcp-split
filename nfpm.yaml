@@ -26,22 +26,40 @@ contents:
       mode: 0755
   - src: ./packaging/systemd/tcp-split.socket
     dst: /usr/lib/systemd/system/tcp-split.socket
+    file_info:
+      mode: 0644
   - src: ./packaging/systemd/tcp-split.service
     dst: /usr/lib/systemd/system/tcp-split.service
+    file_info:
+      mode: 0644
   - src: ./packaging/systemd/tcp-split-redirect.service
     dst: /usr/lib/systemd/system/tcp-split-redirect.service
+    file_info:
+      mode: 0644
   - src: ./packaging/examples/10-listen.conf
     dst: /usr/share/doc/tcp-split/examples/10-listen.conf
+    file_info:
+      mode: 0644
   - src: ./packaging/examples/default
     dst: /usr/share/doc/tcp-split/examples/default
+    file_info:
+      mode: 0644
   - src: ./packaging/examples/redirect.nft
     dst: /usr/share/doc/tcp-split/examples/redirect.nft
+    file_info:
+      mode: 0644
   - src: ./README.md
     dst: /usr/share/doc/tcp-split/README.md
+    file_info:
+      mode: 0644
   - src: ./packaging/README.md
     dst: /usr/share/doc/tcp-split/README.packaging.md
+    file_info:
+      mode: 0644
   - src: ./LICENSE
     dst: /usr/share/doc/tcp-split/copyright
+    file_info:
+      mode: 0644
 scripts:
   postinstall: packaging/postinstall.sh
   postremove: packaging/postremove.sh
