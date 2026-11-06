@@ -4,8 +4,10 @@
 
 ## Install
 
-<!-- fingerprint filled in once the signing key exists -->
-Key fingerprint: `FINGERPRINT-TBD`
+From the signed apt repository at <https://mith.ro/go-tcp-split/>, on Debian
+or Raspberry Pi OS. There is one per suite: `trixie`, `forky` and `sid`, and
+`raspbian-trixie` and `raspbian-forky` for 32-bit Raspberry Pi OS (ARMv6). Put
+your suite's name in place of `trixie` below:
 
 ```sh
 sudo install -d -m0755 /etc/apt/keyrings
@@ -16,9 +18,13 @@ sudo apt update
 sudo apt install tcp-split
 ```
 
+The repository's signing key is
+`45D2 E2D9 4305 121B 96BF  171B A767 675E B2EF 21AF`
+(`gpg --show-keys /etc/apt/keyrings/go-tcp-split.gpg` shows it).
+
 ## Status
 
-Under construction.
+First release in progress: packages publish to https://mith.ro/go-tcp-split/ on merge to main.
 
 ## Build
 
